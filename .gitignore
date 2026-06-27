@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Aider
+.aider*
+
+# Data output files
+GRAB/hasil_custom/*.xlsx
+SHOPEE/data/*.xlsx
+
+# Debug files
+debug_*.json
+*_missing.txt
+_recovered/
+recover_helper.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
