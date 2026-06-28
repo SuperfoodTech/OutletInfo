@@ -269,26 +269,47 @@ async def run_scraper_for_credential(playwright, cred):
         args=["--disable-blink-features=AutomationControlled"]
     )
 
-    context = await browser.new_context(
-        viewport={"width": 1280, "height": 800},
-        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
+    os.makedirs(os.path.join(os.path.dirname(__file__), "sessions"), exist_ok=True)
+    session_file = os.path.join(os.path.dirname(__file__), "sessions", f"grab_session_{cred['name']}.json")
+
+    context_options = {
+        "viewport": {"width": 1280, "height": 800},
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    # Load session jika file session sudah ada
+    if os.path.exists(session_file):
+        context_options["storage_state"] = session_file
+        logger.info(f"Menggunakan session yang tersimpan: {session_file}")
+
+    context = await browser.new_context(**context_options)
 
     page = await context.new_page()
     await capture_auth_headers(page)
 
     try:
-        # Login
-        logged_in = await perform_login(page, cred["username"], cred["password"])
-        if not logged_in:
-            logger.error(f"Failed to login for {cred['name']}, skipping...")
-            return
-
-        await page.wait_for_timeout(2000)
-
-        # Masuk ke menu dulu agar cookies/headers terkait portal ter-load penuh
+        # Cek apakah session masih valid dengan mencoba masuk ke halaman menu
+        logger.info("Mengecek validitas session...")
         await page.goto(f"{BASE_URL}/food/menu", wait_until="networkidle", timeout=60000)
         await page.wait_for_timeout(3000)
+
+        # Jika URL redirect ke halaman login, berarti session belum ada / sudah expired
+        if "login" in page.url.lower():
+            logger.info("Session tidak valid/expired. Memulai proses login...")
+            logged_in = await perform_login(page, cred["username"], cred["password"])
+            if not logged_in:
+                logger.error(f"Failed to login for {cred['name']}, skipping...")
+                return
+
+            # Simpan state/session setelah berhasil login
+            await context.storage_state(path=session_file)
+            logger.info(f"Session baru berhasil disimpan ke {session_file}")
+
+            # Pindah lagi ke halaman menu setelah login berhasil
+            await page.goto(f"{BASE_URL}/food/menu", wait_until="networkidle", timeout=60000)
+            await page.wait_for_timeout(3000)
+        else:
+            logger.info("[✓] Session masih valid! Lewati proses login.")
 
         # Get IDMG (Group ID) from merchant-selector API
         idmg = await fetch_idmg(page)
