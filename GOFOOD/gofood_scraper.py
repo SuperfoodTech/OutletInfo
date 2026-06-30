@@ -489,6 +489,10 @@ def main():
                             df.to_excel(out_file, index=False)
                             print(f"   💾 Data berhasil disimpan ke: {out_file}")
                             print(f"   📊 Total baris: {len(df)}")
+                            
+                            # Upload file individual ke Drive
+                            if APP_SCRIPT_URL:
+                                upload_to_drive(str(out_file))
                     else:
                         print(f"   ⚠️ Gagal membaca struktur data API: {api_response.get('error', api_response)}")
                 else:
