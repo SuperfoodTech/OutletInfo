@@ -112,12 +112,14 @@ def combine_master(output_dir):
         master_df = pd.concat(all_dfs, ignore_index=True)
         master_path = os.path.join(output_dir, "0master.xlsx")
         
-        # File versioning
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        versioned_name = f"0master_v{timestamp}.xlsx"
+        
+        # File versioning lokal (backup master lama)
         if os.path.exists(master_path):
             version_dir = os.path.join(output_dir, "versions")
             os.makedirs(version_dir, exist_ok=True)
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = os.path.join(version_dir, f"0master_v{timestamp}.xlsx")
+            backup_path = os.path.join(version_dir, versioned_name)
             shutil.copy2(master_path, backup_path)
             print(f"   💾 Master lama di-backup ke: {backup_path}")
             
@@ -126,13 +128,14 @@ def combine_master(output_dir):
         
         # Upload ke Drive jika URL tersedia
         if APP_SCRIPT_URL:
-            upload_to_drive(master_path)
+            upload_to_drive(master_path, override_name=versioned_name)
         else:
             print("   ℹ️ Upload ke Google Drive dilewati (APP_SCRIPT_URL masih kosong).")
 
-def upload_to_drive(file_path):
+def upload_to_drive(file_path, override_name=None):
     import base64
-    print(f"\n[*] Mengunggah {os.path.basename(file_path)} ke Google Drive via Apps Script...")
+    final_name = override_name if override_name else os.path.basename(file_path)
+    print(f"\n[*] Mengunggah {final_name} ke Google Drive via Apps Script...")
     try:
         with open(file_path, "rb") as f:
             file_data = f.read()
@@ -140,7 +143,7 @@ def upload_to_drive(file_path):
         b64_data = base64.b64encode(file_data).decode('utf-8')
         
         payload = {
-            "fileName": os.path.basename(file_path),
+            "fileName": final_name,
             "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "fileData": b64_data
         }
