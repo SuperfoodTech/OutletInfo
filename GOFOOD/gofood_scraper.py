@@ -92,7 +92,7 @@ def combine_master(output_dir):
     import datetime
 
     print("\n[*] Menggabungkan semua file ke 0master.xlsx...")
-    files = glob.glob(os.path.join(output_dir, "GOFOOD_outlets_*.xlsx"))
+    files = glob.glob(os.path.join(output_dir, "*.xlsx"))
     
     if not files:
         print("   ⚠️ Tidak ada file hasil scraping untuk digabung.")
@@ -486,8 +486,8 @@ def main():
                             output_dir = Path(__file__).parent / "data"
                             output_dir.mkdir(exist_ok=True)
                             
-                            sanitized_email = "".join(c for c in email if c.isalnum() or c in "._-@")
-                            out_file = output_dir / f"GOFOOD_outlets_{sanitized_email}.xlsx"
+                            sanitized_portal = "".join(c for c in portal_name_str if c.isalnum() or c in " ._-")
+                            out_file = output_dir / f"{sanitized_portal}.xlsx"
                             
                             df.to_excel(out_file, index=False)
                             print(f"   💾 Data berhasil disimpan ke: {out_file}")
