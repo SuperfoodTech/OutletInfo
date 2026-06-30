@@ -326,7 +326,7 @@ def main():
                         # Extract Bank Account
                         bank_acc = ""
                         if 'bank_account' in src and isinstance(src['bank_account'], dict):
-                            bank_no = src['bank_account'].get('account_number', '')
+                            bank_no = src['bank_account'].get('account_no', '')
                             bank_name = src['bank_account'].get('bank_name', '')
                             acc_name = src['bank_account'].get('account_name', '')
                             
