@@ -59,6 +59,7 @@ def main():
     portals = get_credentials_from_sheet()
     email = ""
     sheet_password = ""
+    portal_name_str = "Manual Input"
     
     if portals:
         print("\nDaftar Portal dari Google Sheet:")
@@ -75,6 +76,7 @@ def main():
                 if 0 <= idx < len(portals):
                     email = portals[idx]['email']
                     sheet_password = portals[idx]['password']
+                    portal_name_str = portals[idx]['portal']
             except ValueError:
                 pass
                 
@@ -306,7 +308,7 @@ def main():
                     for item in hits:
                         src = item.get('_source', item)
                         
-                        portal_name = email
+                        portal_name = portal_name_str
                         nama = src.get('outlet_name') or src.get('merchant_name', 'Unknown')
                         store_id = src.get('id', '')
                         
@@ -326,10 +328,14 @@ def main():
                         if 'bank_account' in src and isinstance(src['bank_account'], dict):
                             bank_no = src['bank_account'].get('account_number', '')
                             bank_name = src['bank_account'].get('bank_name', '')
-                            if bank_no and bank_name:
-                                bank_acc = f"{bank_name} - {bank_no}"
-                            else:
-                                bank_acc = bank_no or bank_name
+                            acc_name = src['bank_account'].get('account_name', '')
+                            
+                            parts = []
+                            if bank_name: parts.append(bank_name)
+                            if bank_no: parts.append(bank_no)
+                            if acc_name: parts.append(acc_name)
+                            
+                            bank_acc = " - ".join(parts)
                                 
                         outlets_data.append({
                             'Portal': portal_name,
