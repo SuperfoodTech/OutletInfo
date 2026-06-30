@@ -57,3 +57,21 @@ uv run cli.py
 
 ## 🔒 Security Note
 Do not commit sensitive files containing credentials. They are properly handled by `.gitignore`.
+
+## 🌿 Branching & Versioning Strategy
+
+This repository follows a structured branching and versioning model:
+
+### Branches
+- `main` : Production-ready code.
+- `staging` : Code being tested before production.
+- `feature/xxx` : New feature or task (e.g., `feature/grabfood-menu-data`).
+- `fix/xxx` : Bug fix (e.g., `fix/grabfood-menu-cron`).
+
+*Feature and fix branches should be merged into `staging` for testing, and then into `main`.*
+
+### Versioning (SemVer)
+Format: `vMAJOR.FEATURE.PATCH/BUGFIX`
+- `v0.0.0` : First stable production version.
+- `v0.1.0` : New feature added (e.g., add GrabFood Get Menu Data).
+- `v0.1.1` : Small bug fix (e.g., fix GrabFood menu cron issue).
