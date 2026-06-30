@@ -23,8 +23,8 @@ source .venv/bin/activate
 echo "[*] Memeriksa dan menginstall dependencies (pandas, openpyxl, playwright)..."
 uv pip install -q pandas openpyxl playwright
 
-# Pastikan browser playwright terinstall
-playwright install chromium --with-deps > /dev/null 2>&1
+# Pastikan browser playwright terinstall (tanpa meminta sudo)
+uv run playwright install chromium > /dev/null 2>&1
 
 echo "[*] Menjalankan CLI Utama..."
 python3 cli.py
