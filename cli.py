@@ -262,13 +262,19 @@ def menu_grab():
 # ─── SHOPEE Menus ─────────────────────────────────────────────────────────────
 
 def shopee_select_outlets():
-    """Pilih outlet Shopee yang ingin di-scrape."""
-    # Ambil kredensial secara dinamis
+    """Pilih outlet Shopee yang ingin di-scrape (Via VB Pipeline)."""
+    # Ambil kredensial secara dinamis dari VB
     import sys
-    if SHOPEE_DIR not in sys.path:
-        sys.path.append(SHOPEE_DIR)
-    from shopee_scraper import get_shopee_credentials
-    credentials = get_shopee_credentials()
+    vb_shopee_dir = "/mnt/DATA/Proyek/task-weekly/VB/shopee"
+    if vb_shopee_dir not in sys.path:
+        sys.path.append(vb_shopee_dir)
+        
+    try:
+        from init_sessions import get_vb_portals
+        credentials = get_vb_portals()
+    except Exception as e:
+        error(f"Gagal mengambil kredensial dari VB: {e}")
+        credentials = []
     
     header("Shopee — Pilih Outlet")
     section("Daftar Outlet")
@@ -276,7 +282,9 @@ def shopee_select_outlets():
     menu_item("0", "🔄", "Semua Outlet", "Jalankan scraping untuk semua outlet")
     divider()
     for i, cred in enumerate(credentials, 1):
-        menu_item(str(i), "🏪", cred["name"], f"@{cred.get('username', cred.get('phone', ''))}")
+        display_name = cred.get("merchant_name", cred.get("account_name", ""))
+        user_info = cred.get('username') or cred.get('phone', '')
+        menu_item(str(i), "🏪", display_name, f"@{user_info}")
 
     print()
     menu_item("b", "↩", "Kembali")
@@ -301,17 +309,20 @@ def shopee_run_scraper():
     if selected is None:
         return
 
-    header("Shopee — Menjalankan Scraper")
+    header("Shopee — Menjalankan VB Automation")
+    vb_shopee_script = "/mnt/DATA/Proyek/task-weekly/VB/shopee/run_baseline.py"
+    vb_shopee_dir = "/mnt/DATA/Proyek/task-weekly/VB/shopee"
 
     if selected == "all":
         info("Menjalankan scraper untuk SEMUA outlet Shopee...")
-        run_script(os.path.join(SHOPEE_DIR, "shopee_scraper.py"), cwd=SHOPEE_DIR)
+        run_script(vb_shopee_script, cwd=vb_shopee_dir)
     else:
-        info(f"Menjalankan scraper untuk outlet: {selected['name']}")
+        merchant_name = selected.get("merchant_name", "")
+        info(f"Menjalankan scraper untuk outlet: {merchant_name}")
         run_script(
-            os.path.join(SHOPEE_DIR, "shopee_scraper.py"),
-            cwd=SHOPEE_DIR,
-            extra_args=["--outlet", selected["name"]]
+            vb_shopee_script,
+            cwd=vb_shopee_dir,
+            extra_args=["--merchant", merchant_name]
         )
 
     wait()
@@ -454,8 +465,8 @@ def run_all():
     section("Grab Scraper")
     run_script(os.path.join(GRAB_DIR, "grab_merchant_scraper.py"), cwd=GRAB_DIR)
 
-    section("Shopee Scraper")
-    run_script(os.path.join(SHOPEE_DIR, "shopee_scraper.py"), cwd=SHOPEE_DIR)
+    section("Shopee Scraper (Via VB)")
+    run_script("/mnt/DATA/Proyek/task-weekly/VB/shopee/run_baseline.py", cwd="/mnt/DATA/Proyek/task-weekly/VB/shopee")
 
     section("GoFood Scraper")
     run_script(os.path.join(GOFOOD_DIR, "gofood_scraper.py"), cwd=GOFOOD_DIR)
