@@ -1,0 +1,146 @@
+{
+    "email": "superfoodindonesia.id3@gmail.com",
+    "cookies": [
+        {
+            "name": "_gaSessionId",
+            "value": "46bcc48a-496a-4657-be24-d7866285863a",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": -1,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "destination_before_logout",
+            "value": "/dashboard",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353929.503147,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "disable_analytics",
+            "value": "true",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": -1,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "_ga",
+            "value": "GA1.1.1289053195.1782793931",
+            "domain": ".gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353930.888534,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "browser_id",
+            "value": "d7d44684-ac23-47af-b4b0-7caa8cdfb111",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353932.281562,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "language",
+            "value": "id",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353934.015289,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "selected_country",
+            "value": "ID",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353934.015585,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "access_token",
+            "value": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..prhcLeeYq0ELc5Ui.zqjErYVKy1TQDvPkExe42SF1XkHhO-wzeFNKP2U8_JuZ7aLeciPXQyXx5Vz6Im6H8ewDyAx6qqfo54ThA6SwsGu3R_Xes87ZBjETqkoPpUaqrjYpKPFO4GUno1fFLpXVCVWTWHzkI0a1kXq5qjNzQxNFra9u79t_auO9x3CsPeOR_r5nvtySbtIE2uxHFG75oZodJDYvFuwbe64yMFF_6MZKuJkritNSyzY4CGPNxgOs5w3d7l5U0zLFe1Or3ylID1t2yuA0zYVI85GbtJPKcs-oBhGg-Kg7rALCcBOpU7yzEMnlsIXnGzDDZ8Aw0nQwEKVkW7DpqQLBL8XiX6H7MKdAA5J6SPF2hzTr_Jt6Npq0ol8cgsYjkY6cNFkpENQcKyNokcsU8EnIGY9uhz4qlDw22HJFqoC3WgzUdCFf1RSRdxF2XmPLvHJJfB6UaJyg0hs7j7zoyC7Lrtx4l_oDxeA5CNfwe4d2aSu8VUxpHNgLwPqp7m5md412abJU53TniB8Jql9XJiqH7K4QRX9wEjj6inEvGVbqxOt3ac5EFhLMc--TaoMl2wWuZedNQTz7kcy1OqZp6anTA_UK-whZexVd_hn9rj89Q83MNtg2L-9Yhjur_duEBCI2_ZKd5ZrTDuLouG-tR-p85UkJC9n3LnP3KgSgd49Gxgkdu7ZQG3aaY3fAvKMd-d1DmbFqNcuhpNIRTsJnrqBA1JsOIROR5VtcSowpjJsFXg_WTBiwGksaLxYAqWHK4iDxPMMnV-cf3wIfi3aqtVBNtEx3VZBmxVG1GcEx1f6hA3YVWHduMkbrFCbQR9VYlY7u70FYmWzlu3XBQ63St2NyX5n8xLXQByM70T18qQDTBCVbnRQGGHMGSLh6hPWLD1oxv6m3TsnhjVE_C_H_LpDFsVFBV_zKZ8-P7V6obBHm7AceLXdduwTLIGVp8lhRdLDxI7fn78R1DOCsNiGwoxHLNhccHHlnjv2xQyx10xabfQoBUzzSJfYlPN12zD8VEApI-twkK1PD4FWc6fMf1SBILioWakVhayoB-I5KzYV4KxTtBfF3QEqIo4JbzReiQ1sA2FEk4Y75I0PUlJw3NEVX4Z1MJI2M1KDyyNxzJ3jH6lYN-pvvutXuabJb8JQzkN_SGwfX3oIYTlM-Ffj8GodPt_eKWI-TNyNkx4UPhLUGuJrnAeT94xTpcGYOPVVZWN-w1E16TdMRUNovEpd7YfnLKVoUjAUPemC2zl-mG-GN0HDwJ2fvpfiy9xP2VEeYceRgXerZOVjyGKCQz2lY2jGlBbSy08UDId3AC0ghambKHKjK6Yl5FmQL9L8PpLI_yAst6tgBqOfrIORZKxSCLYK5fYKeVpjRA7qyNydPzrAkxXNfDHvSDY9-QcqfcW79TndC2zy42FFSSz18hzmb35rBWkt45sspHVc1SxLDUtj-9nYR6ZziewEaiBvHstilnBy8byPeheb24tyl6AmA6ycIa0DnvxUEXZvaaPW59LSD9uRsSCxDo6JaUkdVkJq6z6_pcamwSBL8tcB3vBF6kefUzkYfmjN0vR147VM2FaI6uiCZkjC0UjdMI_SH6R6Ps3JP7hR-kaaOlBDoxxYbtkAkBqOQaAE_vISULEtvsi3aGODFFo9pXdADKDfna7ngiLABjlEBat9wxI2D8ZcM-h1alqIFZ4xOI2-oBS2pOBSoH1pZsJX-lmHVGothMY9zuDJ2wFy5hmBXBOHW7z7Vp7xsf4iciyVlc-mh8sKZdpanCob9D_JaIOe57dTs29B9gDc_AY_7fRkhrcv0gHn-IxfoZKt_ZpTwsZzHvQy38eNQ_CvnVoANogQO20B9IxBNhP0_joBH_sE2A6o6GnDcZTOttBjRLiHm47aAcXQjJpp4gpa_MGfV-XA2THDFiXOu1c58W3vxTgujQylHVt6kRrPjpcNnyuGV6CX81qWoZ5yLwQgPp33C2JhXIlDVdlXSLDQMGCunLVPtuDkJGodkEGroRr4siV0MUGdR.JzdUKoQNjW2DtJUwZyjBfQ",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353950.812995,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "auth_method",
+            "value": "email",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353948.035993,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "OptanonConsent",
+            "value": "isGpcEnabled=0&datestamp=Tue+Jun+30+2026+11%3A32%3A28+GMT%2B0700+(Western+Indonesia+Time)&version=202503.2.0&browserGpcFlag=0&isIABGlobal=false&hosts=&consentId=df00441d-9974-4457-a802-373d6a9c134f&interactionCount=1&isAnonUser=1&landingPath=https%3A%2F%2Fportal.gofoodmerchant.co.id%2Fauth%2Flogin%2Femail&groups=C0001%3A1%2CC0003%3A0%2CC0002%3A0%2CC0004%3A0",
+            "domain": ".gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1814329948,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "api_level",
+            "value": "undefined",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353950.806761,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "app_id",
+            "value": "undefined",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353950.811863,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "version_code",
+            "value": "undefined",
+            "domain": "portal.gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353950.81256,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        },
+        {
+            "name": "_ga_C6BBTVZ8DQ",
+            "value": "GS2.1.s1782793930$o1$g1$t1782793951$j39$l0$h0",
+            "domain": ".gofoodmerchant.co.id",
+            "path": "/",
+            "expires": 1817353951.219642,
+            "httpOnly": false,
+            "secure": false,
+            "sameSite": "Lax"
+        }
+    ],
+    "timestamp": 1782793951.3197353
+}

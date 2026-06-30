@@ -1,0 +1,230 @@
+import os
+import json
+import time
+import getpass
+import urllib.request
+import csv
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+SESSION_DIR = Path(__file__).parent / "session"
+SESSION_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_credentials_from_sheet():
+    url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRYSUnKOqk29LCktTxdb0wPLbWMbRaWRP3eC_UA4AwYod1FW6zDMhtLMC5ghIvot2B8upCDfBsn-TCP/pub?gid=0&single=true&output=csv"
+    try:
+        print("[*] Mengambil data portal dari Google Sheet...")
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            lines = [l.decode('utf-8') for l in response.readlines()]
+            reader = csv.reader(lines)
+            data = list(reader)
+            
+            portals = []
+            for row in data[2:]:
+                if len(row) > 5 and row[1].strip():
+                    portal = row[1].strip()
+                    email = row[3].strip()
+                    password = row[5].strip()
+                    if email and password:
+                        portals.append({
+                            'portal': portal,
+                            'email': email,
+                            'password': password
+                        })
+            return portals
+    except Exception as e:
+        print(f"⚠️ Gagal mengambil data dari Google Sheet: {e}")
+        return []
+
+def load_session(identifier):
+    sanitized = "".join(c for c in identifier if c.isalnum() or c in "._-@")
+    session_file = SESSION_DIR / f"session_{sanitized}.json"
+    if session_file.exists():
+        with open(session_file, 'r') as f:
+            return json.load(f)
+    return None
+
+def save_session(identifier, session_data):
+    sanitized = "".join(c for c in identifier if c.isalnum() or c in "._-@")
+    session_file = SESSION_DIR / f"session_{sanitized}.json"
+    with open(session_file, 'w') as f:
+        json.dump(session_data, f, indent=4)
+
+def main():
+    print("="*60)
+    print("  🚀 GOFOOD OUTLET SCRAPER")
+    print("="*60)
+    
+    portals = get_credentials_from_sheet()
+    email = ""
+    sheet_password = ""
+    
+    if portals:
+        print("\nDaftar Portal dari Google Sheet:")
+        for idx, p in enumerate(portals):
+            print(f"  [{idx+1}] {p['portal']} ({p['email']})")
+        print(f"  [n] Input Email Baru secara manual")
+        
+        choice = input(f"\nPilih portal (1-{len(portals)}/n): ").strip().lower()
+        if choice == 'n':
+            email = input("\nMasukkan Email Akun GoFood: ").strip()
+        else:
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(portals):
+                    email = portals[idx]['email']
+                    sheet_password = portals[idx]['password']
+            except ValueError:
+                pass
+                
+    if not email:
+        email = input("\nMasukkan Email Akun GoFood: ").strip()
+        
+    if not email:
+        print("Email tidak boleh kosong.")
+        return
+
+    session_data = load_session(email)
+
+    with sync_playwright() as p:
+        print("[*] Membuka browser...")
+        browser = p.chromium.launch(
+            headless=False, 
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--no-sandbox'
+            ]
+        )
+        context = browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+
+        if session_data and session_data.get('cookies'):
+            print("   🔑 Sesi ditemukan. Memuat cookies...")
+            context.add_cookies(session_data['cookies'])
+
+        page = context.new_page()
+        
+        print("[*] Mengakses https://portal.gofoodmerchant.co.id/dashboard ...")
+        page.goto("https://portal.gofoodmerchant.co.id/dashboard", wait_until="domcontentloaded")
+        
+        try:
+            page.wait_for_url(lambda url: "/auth" in url or "login" in url or "/gofood" in url, timeout=10000)
+        except:
+            pass
+            
+        time.sleep(3)
+
+        # Proses Login
+        if "/auth" in page.url or "login" in page.url:
+            print("\n⚠️ Memulai proses login otomatis dengan Email & Password...")
+            page.goto("https://portal.gofoodmerchant.co.id/auth/login/email", wait_until="domcontentloaded")
+            time.sleep(2)
+            
+            try:
+                email_input = page.wait_for_selector(
+                    'input[type="email"], input[name="email"], input[name="username"], input[placeholder*="email" i], input[placeholder*="Email" i]',
+                    state='visible',
+                    timeout=10000
+                )
+                
+                if email_input:
+                    try:
+                        email_input.click(force=True, timeout=3000)
+                    except:
+                        email_input.evaluate("el => el.focus()")
+                    time.sleep(0.3)
+                    email_input.fill(email, force=True)
+                    time.sleep(0.5)
+                    
+                    pass_input = page.locator('input[type="password"], input[name="password"]')
+                    if pass_input.count() == 0:
+                        submit_btn = page.locator('button:has-text("Lanjut"), button:has-text("Submit"), button[type="submit"]')
+                        if submit_btn.count() > 0:
+                            submit_btn.first.click()
+                        else:
+                            email_input.press("Enter")
+                        
+                        time.sleep(2)
+                        pass_input = page.locator('input[type="password"], input[name="password"]')
+                        
+                    if pass_input.count() > 0:
+                        if sheet_password:
+                            password = sheet_password
+                            print(f"   🔑 Menggunakan password dari Google Sheet untuk {email}.")
+                        else:
+                            password = getpass.getpass(f"\n🔑 Masukkan Password untuk {email}: ").strip()
+                            
+                        if not password:
+                            print("⚠️ Password kosong. Menghentikan login.")
+                            return
+                            
+                        print("   🤖 Memasukkan password...")
+                        try:
+                            pass_input.first.click(force=True, timeout=3000)
+                        except:
+                            pass_input.first.evaluate("el => el.focus()")
+                        time.sleep(0.3)
+                        pass_input.first.fill(password, force=True)
+                        time.sleep(0.5)
+                        
+                        pass_submit = page.locator('button:has-text("Masuk"), button:has-text("Lanjut"), button[type="submit"]')
+                        if pass_submit.count() > 0:
+                            pass_submit.first.click(force=True)
+                        else:
+                            pass_input.first.press("Enter")
+                        print("   ✅ Password berhasil diisi. Mengirim form...")
+                    else:
+                        print("   ⚠️ Kolom password tidak ditemukan.")
+            except Exception as e:
+                print(f"   ⚠️ Terjadi kesalahan saat automasi login: {e}")
+                
+            print("\n[*] Menunggu login selesai (Otomatis/Manual)...")
+            try:
+                page.wait_for_url(lambda url: "/auth/login" not in url, timeout=60000)
+                print("\n✅ Login terdeteksi berhasil!")
+            except Exception as e:
+                print("\n❌ Waktu login habis atau browser ditutup.")
+                return
+
+        # Simpan sesi
+        save_session(email, {
+            'email': email,
+            'cookies': context.cookies(),
+            'timestamp': time.time()
+        })
+        print("   💾 Sesi login berhasil disimpan.")
+
+        # --- Objektif: Masuk ke portal /outlets ---
+        print("\n[*] Mengakses halaman Outlets...")
+        page.goto("https://portal.gofoodmerchant.co.id/outlets", wait_until="domcontentloaded")
+        
+        print("   [*] Melakukan double refresh halaman untuk memastikan data termuat...")
+        time.sleep(2)
+        page.reload(wait_until="domcontentloaded")
+        time.sleep(2)
+        page.reload(wait_until="domcontentloaded")
+        
+        print("\n✅ Berhasil masuk ke halaman Outlets (https://portal.gofoodmerchant.co.id/outlets)")
+        
+        # Di sini bisa ditambahkan logika scraping atau intercept API
+        
+        print("\n⏳ Menunggu di dashboard Outlets. Silakan amati atau tutup browser untuk keluar...")
+        try:
+            page.wait_for_event("close", timeout=0)
+        except Exception:
+            pass
+
+        try:
+            if not page.is_closed():
+                save_session(email, {'email': email, 'cookies': context.cookies(), 'timestamp': time.time()})
+                print("   💾 Sesi terakhir disimpan.")
+            browser.close()
+        except:
+            pass
+
+if __name__ == "__main__":
+    main()
