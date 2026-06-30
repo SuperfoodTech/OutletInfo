@@ -20,6 +20,10 @@ ENV/
 # Data output files
 GRAB/hasil_custom/*.xlsx
 SHOPEE/data/*.xlsx
+GOFOOD/data/*.xlsx
+
+# Session files
+GOFOOD/session/*.json
 
 # Debug files
 debug_*.json
