@@ -9,36 +9,74 @@ from playwright.async_api import async_playwright
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("ShopeeScraper")
 
-CREDENTIALS = [
-    {
-        "name": "F",
-        "phone": "+6285183151531",
-        "username": "superfoodapp",
-        "password": "Nesia@123@",
-        "output": "data/F.xlsx"
-    },
-    {
-        "name": "W",
-        "phone": "+6285182003796",
-        "username": "wonderfoodapp",
-        "password": "Wonder@123@@",
-        "output": "data/W.xlsx"
-    },
-    {
-        "name": "L",
-        "phone": "+6285182003783",
-        "username": "lokarasaapp",
-        "password": "Lokar@123@",
-        "output": "data/L.xlsx"
-    },
-    {
-        "name": "D",
-        "phone": "+6285136517300",
-        "username": "doeatapp",
-        "password": "Doeat@123@",
-        "output": "data/D.xlsx"
-    },
-]
+CRED_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRYSUnKOqk29LCktTxdb0wPLbWMbRaWRP3eC_UA4AwYod1FW6zDMhtLMC5ghIvot2B8upCDfBsn-TCP/pub?gid=565510790&single=true&output=csv"
+
+def get_shopee_credentials():
+    import json
+    import os
+    import pandas as pd
+    
+    cache_file = os.path.join(os.path.dirname(__file__), "data", "shopee_credentials_cache.json")
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    
+    portals = []
+    logger.info("🌐 Mengambil kredensial Shopee dari Google Sheets...")
+    try:
+        df = pd.read_csv(CRED_URL)
+        if "Notes" in df.columns:
+            df = df[~df["Notes"].astype(str).str.contains("restricted", na=False, case=False)]
+        owner_df = df[df['Role'].str.strip().str.lower() == 'owner'].copy()
+        
+        for _, row in owner_df.iterrows():
+            portal_val = str(row.get('Portal', '')).strip()
+            if not portal_val:
+                continue
+                
+            phone_val = row.get('Phone')
+            if pd.isna(phone_val):
+                phone_str = ""
+            else:
+                try:
+                    phone_str = str(int(float(phone_val))).strip()
+                except:
+                    phone_str = str(phone_val).strip()
+                    
+            if phone_str and phone_str.startswith("62"):
+                phone_str = "+" + phone_str
+                
+            username = str(row.get('Username', '')).strip()
+            password = str(row.get('Password', '')).strip()
+            
+            if not username and not phone_str:
+                continue
+                
+            portals.append({
+                "name": portal_val,
+                "phone": phone_str,
+                "username": username,
+                "password": password,
+                "output": f"data/{portal_val}.xlsx"
+            })
+            
+        if portals:
+            with open(cache_file, "w") as f:
+                json.dump({"portals": portals}, f, indent=2)
+            logger.info(f"💾 Disimpan {len(portals)} kredensial portal ke cache lokal.")
+            return portals
+    except Exception as e:
+        logger.warning(f"⚠️ Gagal mengambil kredensial dari Google Sheets: {e}")
+        
+    # Fallback to local cache
+    if os.path.exists(cache_file):
+        logger.info(f"📂 Menggunakan cache lokal: {os.path.basename(cache_file)}")
+        try:
+            with open(cache_file, "r") as f:
+                cached = json.load(f)
+                return cached.get("portals", [])
+        except Exception as err:
+            logger.error(f"❌ Gagal membaca cache: {err}")
+            
+    return []
 
 BASE_URL = "https://partner.shopee.co.id"
 LOGIN_URL = f"{BASE_URL}/account/login"
@@ -275,9 +313,14 @@ async def main():
     parser.add_argument("--outlet", type=str, help="Specify the outlet name to run (e.g., F)")
     args = parser.parse_args()
 
-    target_credentials = CREDENTIALS
+    target_credentials = get_shopee_credentials()
+    
+    if not target_credentials:
+        logger.error("Tidak ada kredensial Shopee yang tersedia. Keluar.")
+        return
+        
     if args.outlet:
-        target_credentials = [c for c in CREDENTIALS if c["name"] == args.outlet]
+        target_credentials = [c for c in target_credentials if c["name"].upper() == args.outlet.upper()]
         if not target_credentials:
             logger.error(f"Outlet '{args.outlet}' not found in credentials.")
             return

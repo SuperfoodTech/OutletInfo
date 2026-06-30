@@ -50,13 +50,6 @@ GRAB_CREDENTIALS = [
     {"name": "JF1S", "username": "automationjf1s"},
 ]
 
-SHOPEE_CREDENTIALS = [
-    {"name": "F",  "username": "superfoodapp"},
-    {"name": "W",  "username": "wonderfoodapp"},
-    {"name": "L",  "username": "lokarasaapp"},
-    {"name": "D",  "username": "doeatapp"},
-]
-
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 
 def header(title="Outlet Info CLI"):
@@ -270,13 +263,20 @@ def menu_grab():
 
 def shopee_select_outlets():
     """Pilih outlet Shopee yang ingin di-scrape."""
+    # Ambil kredensial secara dinamis
+    import sys
+    if SHOPEE_DIR not in sys.path:
+        sys.path.append(SHOPEE_DIR)
+    from shopee_scraper import get_shopee_credentials
+    credentials = get_shopee_credentials()
+    
     header("Shopee — Pilih Outlet")
     section("Daftar Outlet")
 
     menu_item("0", "🔄", "Semua Outlet", "Jalankan scraping untuk semua outlet")
     divider()
-    for i, cred in enumerate(SHOPEE_CREDENTIALS, 1):
-        menu_item(str(i), "🏪", cred["name"], f"@{cred['username']}")
+    for i, cred in enumerate(credentials, 1):
+        menu_item(str(i), "🏪", cred["name"], f"@{cred.get('username', cred.get('phone', ''))}")
 
     print()
     menu_item("b", "↩", "Kembali")
@@ -288,8 +288,8 @@ def shopee_select_outlets():
         return None
     elif choice == "0":
         return "all"
-    elif choice.isdigit() and 1 <= int(choice) <= len(SHOPEE_CREDENTIALS):
-        return SHOPEE_CREDENTIALS[int(choice) - 1]
+    elif choice.isdigit() and 1 <= int(choice) <= len(credentials):
+        return credentials[int(choice) - 1]
     else:
         error("Pilihan tidak valid.")
         wait()
