@@ -489,13 +489,26 @@ def main():
                             sanitized_portal = "".join(c for c in portal_name_str if c.isalnum() or c in " ._-")
                             out_file = output_dir / f"{sanitized_portal}.xlsx"
                             
+                            import datetime
+                            import shutil
+                            timestamp_ind = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                            versioned_portal_name = f"{sanitized_portal}_v{timestamp_ind}.xlsx"
+                            
+                            # File versioning lokal untuk file portal
+                            if out_file.exists():
+                                version_dir = output_dir / "versions"
+                                version_dir.mkdir(exist_ok=True)
+                                backup_path = version_dir / versioned_portal_name
+                                shutil.copy2(str(out_file), str(backup_path))
+                                print(f"   💾 Data lama di-backup ke: {backup_path}")
+                            
                             df.to_excel(out_file, index=False)
                             print(f"   💾 Data berhasil disimpan ke: {out_file}")
                             print(f"   📊 Total baris: {len(df)}")
                             
-                            # Upload file individual ke Drive
+                            # Upload file individual ke Drive dengan nama timestamp
                             if APP_SCRIPT_URL:
-                                upload_to_drive(str(out_file))
+                                upload_to_drive(str(out_file), override_name=versioned_portal_name)
                     else:
                         print(f"   ⚠️ Gagal membaca struktur data API: {api_response.get('error', api_response)}")
                 else:
