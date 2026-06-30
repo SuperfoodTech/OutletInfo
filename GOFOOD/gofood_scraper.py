@@ -199,6 +199,16 @@ def main():
         print("   💾 Sesi login berhasil disimpan.")
 
         # --- Objektif: Masuk ke portal /outlets ---
+        valid_token = None
+        def capture_headers(request):
+            nonlocal valid_token
+            if "api.gobiz.co.id" in request.url or "api.gojekapi.com" in request.url:
+                h = request.headers
+                if 'authorization' in h:
+                    valid_token = h['authorization']
+        
+        page.on("request", capture_headers)
+
         print("\n[*] Mengakses halaman Outlets...")
         page.goto("https://portal.gofoodmerchant.co.id/outlets", wait_until="domcontentloaded")
         
@@ -207,16 +217,152 @@ def main():
         page.reload(wait_until="domcontentloaded")
         time.sleep(2)
         page.reload(wait_until="domcontentloaded")
+        time.sleep(3) # Tunggu network selesai agar token tertangkap
         
         print("\n✅ Berhasil masuk ke halaman Outlets (https://portal.gofoodmerchant.co.id/outlets)")
         
-        # Di sini bisa ditambahkan logika scraping atau intercept API
-        
-        print("\n⏳ Menunggu di dashboard Outlets. Silakan amati atau tutup browser untuk keluar...")
+        print("\n[*] Mengambil data outlet (Scraping API)...")
         try:
-            page.wait_for_event("close", timeout=0)
-        except Exception:
-            pass
+            # 1. Ambil token dari interceptor, fallback ke localStorage
+            token = valid_token
+            if not token:
+                token = page.evaluate("""() => {
+                    const keys = ['token', 'access_token', 'accessToken', 'auth_token', 'authorization', 'gobiz-token', 'go-id-token'];
+                    for (const k of keys) {
+                        let val = localStorage.getItem(k) || sessionStorage.getItem(k);
+                        if (val) {
+                            if (val.startsWith('{')) {
+                                try {
+                                    const parsed = JSON.parse(val);
+                                    val = parsed.token || parsed.access_token || parsed.accessToken || val;
+                                } catch(e){}
+                            }
+                            if (val && val.length > 20) return val;
+                        }
+                    }
+                    const tokenRegex = /[A-Za-z0-9-_=]+\\.[A-Za-z0-9-_=]+\\.?[A-Za-z0-9-_.+/=]*/;
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const val = localStorage.getItem(localStorage.key(i));
+                        if (val && val.length > 20) {
+                            if (val.includes('eyJ')) return val;
+                            const match = val.match(tokenRegex);
+                            if (match) return match[0];
+                        }
+                    }
+                    for (let i = 0; i < sessionStorage.length; i++) {
+                        const val = sessionStorage.getItem(sessionStorage.key(i));
+                        if (val && val.length > 20) {
+                            if (val.includes('eyJ')) return val;
+                            const match = val.match(tokenRegex);
+                            if (match) return match[0];
+                        }
+                    }
+                    return null;
+                }""")
+            
+            if token:
+                if not token.startswith("Bearer "):
+                    token = "Bearer " + token
+                    
+                payload_str = json.dumps({
+                    "from": 0,
+                    "size": 1000,
+                    "_source": [
+                        "id", "director_name", "merchant_name", "email", "feature_types", 
+                        "phone", "outlet_address", "outlet_name", "outlet_city", 
+                        "payment_settings.GOPAY", "tags", "bank_account", "applications", 
+                        "pops", "aspi", "business_type", "metadata", "id_type", "merchant_type"
+                    ]
+                })
+                
+                print("   [*] Mengeksekusi request ke GoBiz API...")
+                api_response = page.evaluate("""async ({token, payload}) => {
+                    try {
+                        const res = await fetch('https://api.gobiz.co.id/v1/merchants/search', {
+                            method: 'POST',
+                            headers: {
+                                'Accept': 'application/json, text/plain, */*',
+                                'Authentication-Type': 'go-id',
+                                'Authorization': token,
+                                'Content-Type': 'application/json'
+                            },
+                            body: payload
+                        });
+                        return await res.json();
+                    } catch (e) {
+                        return { error: e.message };
+                    }
+                }""", {"token": token, "payload": payload_str})
+                
+                outlets_data = []
+                hits = []
+                if api_response and 'hits' in api_response:
+                    hits = api_response['hits']
+                elif api_response and 'data' in api_response:
+                    hits = api_response['data']
+                    
+                if hits:
+                    print(f"   ✅ Berhasil menarik {len(hits)} data outlet mentah!")
+                    for item in hits:
+                        src = item.get('_source', item)
+                        
+                        portal_name = email
+                        nama = src.get('outlet_name') or src.get('merchant_name', 'Unknown')
+                        store_id = src.get('id', '')
+                        
+                        # Extract Status
+                        status = "Unknown"
+                        apps = src.get('applications', {})
+                        if 'goresto' in apps:
+                            status = apps['goresto'].get('status', status)
+                            
+                        alamat = src.get('outlet_address', '')
+                        
+                        # Extract Group ID (if available)
+                        group_id = apps.get('goresto', {}).get('goresto_id', store_id)
+                        
+                        # Extract Bank Account
+                        bank_acc = ""
+                        if 'bank_account' in src and isinstance(src['bank_account'], dict):
+                            bank_no = src['bank_account'].get('account_number', '')
+                            bank_name = src['bank_account'].get('bank_name', '')
+                            if bank_no and bank_name:
+                                bank_acc = f"{bank_name} - {bank_no}"
+                            else:
+                                bank_acc = bank_no or bank_name
+                                
+                        outlets_data.append({
+                            'Portal': portal_name,
+                            'Nama': nama,
+                            'Group ID': group_id,
+                            'Store ID': store_id,
+                            'Status': status,
+                            'Alamat': alamat,
+                            'Bank Account': bank_acc
+                        })
+                        
+                    # Save to Excel
+                    if outlets_data:
+                        import pandas as pd
+                        df = pd.DataFrame(outlets_data)
+                        output_dir = Path(__file__).parent / "data"
+                        output_dir.mkdir(exist_ok=True)
+                        
+                        sanitized_email = "".join(c for c in email if c.isalnum() or c in "._-@")
+                        out_file = output_dir / f"GOFOOD_outlets_{sanitized_email}.xlsx"
+                        
+                        df.to_excel(out_file, index=False)
+                        print(f"   💾 Data berhasil disimpan ke: {out_file}")
+                        print(f"   📊 Total baris: {len(df)}")
+                else:
+                    print(f"   ⚠️ Gagal membaca struktur data API: {api_response.get('error', api_response)}")
+            else:
+                print("   ⚠️ Token otentikasi tidak ditemukan di browser.")
+        except Exception as e:
+            print(f"   ⚠️ Terjadi kesalahan saat scraping: {e}")
+            
+        print("\n⏳ Proses selesai. Menutup browser dalam 3 detik...")
+        time.sleep(3)
 
         try:
             if not page.is_closed():
