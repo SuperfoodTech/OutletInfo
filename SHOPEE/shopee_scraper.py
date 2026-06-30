@@ -48,11 +48,18 @@ auth_headers = {}
 
 
 async def perform_login(page, credential):
-    logger.info(f"Navigating to Shopee login page for {credential['name']}...")
+    logger.info(f"Checking session for {credential['name']}...")
     try:
-        await page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
-        await page.wait_for_timeout(2000)
-
+        # Cek apakah sudah login dengan mengakses dashboard
+        await page.goto(DASHBOARD_URL, wait_until="networkidle", timeout=60000)
+        await page.wait_for_timeout(3000)
+        
+        if "login" not in page.url:
+            logger.info(f"✅ Sudah login menggunakan session untuk {credential['name']}!")
+            return True
+            
+        logger.info(f"Sesi tidak valid/belum login. Mengisi form login untuk {credential['name']}...")
+        
         # Try phone login
         phone_input = page.locator('input[type="tel"], input[placeholder*="Nomor" i], input[placeholder*="phone" i]').first
         if await phone_input.is_visible(timeout=5000):
@@ -66,10 +73,16 @@ async def perform_login(page, credential):
 
         submit_btn = page.locator('button[type="submit"]').first
         await submit_btn.click()
-
-        await page.wait_for_url(f"{BASE_URL}/**", timeout=30000)
-        logger.info(f"Login successful for {credential['name']}")
-        return True
+        
+        logger.info("Menunggu penyelesaian login (harap masukkan OTP secara manual jika diminta)...")
+        # Beri waktu lebih lama agar user bisa memasukkan OTP jika diperlukan
+        try:
+            await page.wait_for_url(lambda url: "login" not in url, timeout=60000)
+            logger.info(f"✅ Login sukses untuk {credential['name']}")
+            return True
+        except:
+            logger.error(f"Waktu tunggu login habis untuk {credential['name']}")
+            return False
 
     except Exception as e:
         logger.error(f"Login failed for {credential['name']}: {e}")
@@ -189,15 +202,18 @@ async def run_scraper_for_credential(playwright, cred):
     logger.info(f"Starting Shopee scraper for: {cred['name']}")
     logger.info(f"{'='*50}")
 
-    browser = await playwright.chromium.launch(
+    user_data_dir = os.path.join(os.path.dirname(__file__), "data", "chrome_profiles", f"portal_{cred['name'].lower()}")
+    os.makedirs(user_data_dir, exist_ok=True)
+    
+    context = await playwright.chromium.launch_persistent_context(
+        user_data_dir=user_data_dir,
         headless=False,
-        args=["--disable-blink-features=AutomationControlled"]
-    )
-    context = await browser.new_context(
+        args=["--disable-blink-features=AutomationControlled"],
         viewport={"width": 1280, "height": 800},
         user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
-    page = await context.new_page()
+    
+    page = context.pages[0] if context.pages else await context.new_page()
     page.on("request", handle_request)
 
     try:
@@ -252,7 +268,6 @@ async def run_scraper_for_credential(playwright, cred):
         logger.error(f"Error for {cred['name']}: {e}")
     finally:
         await context.close()
-        await browser.close()
 
 
 async def main():
