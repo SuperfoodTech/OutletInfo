@@ -21,9 +21,10 @@ ENV/
 GRAB/hasil_custom/*.xlsx
 SHOPEE/data/*.xlsx
 GOFOOD/data/*.xlsx
+GOFOOD/data/versions/
 
 # Session files
-GOFOOD/session/*.json
+GOFOOD/session/
 
 # Debug files
 debug_*.json
