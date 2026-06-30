@@ -20,8 +20,8 @@ fi
 echo "[*] Mengaktifkan virtual environment..."
 source .venv/bin/activate
 
-echo "[*] Memeriksa dan menginstall dependencies (pandas, openpyxl, playwright)..."
-uv pip install -q pandas openpyxl playwright
+echo "[*] Memeriksa dan menginstall dependencies (pandas, openpyxl, playwright, requests, python-dotenv)..."
+uv pip install -q pandas openpyxl playwright requests python-dotenv
 
 # Pastikan browser playwright terinstall (tanpa meminta sudo)
 uv run playwright install chromium > /dev/null 2>&1

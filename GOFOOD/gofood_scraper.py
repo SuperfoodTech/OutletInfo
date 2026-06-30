@@ -4,8 +4,16 @@ import time
 import getpass
 import urllib.request
 import csv
+import requests
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# --- CONFIG ---
+APP_SCRIPT_URL = os.getenv("APP_SCRIPT_URL", "")
+# --------------
 
 SESSION_DIR = Path(__file__).parent / "session"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
@@ -115,6 +123,44 @@ def combine_master(output_dir):
             
         master_df.to_excel(master_path, index=False)
         print(f"   ✅ Penggabungan berhasil! Total {len(master_df)} baris disimpan di 0master.xlsx")
+        
+        # Upload ke Drive jika URL tersedia
+        if APP_SCRIPT_URL:
+            upload_to_drive(master_path)
+        else:
+            print("   ℹ️ Upload ke Google Drive dilewati (APP_SCRIPT_URL masih kosong).")
+
+def upload_to_drive(file_path):
+    import base64
+    print(f"\n[*] Mengunggah {os.path.basename(file_path)} ke Google Drive via Apps Script...")
+    try:
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+            
+        b64_data = base64.b64encode(file_data).decode('utf-8')
+        
+        payload = {
+            "fileName": os.path.basename(file_path),
+            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "fileData": b64_data
+        }
+        
+        response = requests.post(APP_SCRIPT_URL, json=payload, allow_redirects=True)
+        
+        if response.status_code in (200, 201):
+            try:
+                res_json = response.json()
+                if res_json.get("status") == "success":
+                    print(f"   ✅ Berhasil diunggah! URL: {res_json.get('url')}")
+                else:
+                    print(f"   ⚠️ Gagal: {res_json.get('message')}")
+            except:
+                print("   ✅ Berhasil diunggah!")
+        else:
+            print(f"   ⚠️ Gagal mengunggah. Status code: {response.status_code}")
+            print(f"   Detail: {response.text}")
+    except Exception as e:
+        print(f"   ⚠️ Terjadi kesalahan saat mengunggah: {e}")
 
 def main():
     print("="*60)
