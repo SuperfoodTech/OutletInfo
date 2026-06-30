@@ -8,24 +8,17 @@ echo "  GoFood Merchant Scraper"
 echo "==============================="
 echo ""
 
-# Cari virtual environment (cek GOFOOD dulu, lalu root)
-VENV_DIR=""
-for candidate in "$SCRIPT_DIR/.venv" "$ROOT_DIR/.venv"; do
-    if [ -d "$candidate" ]; then
-        VENV_DIR="$candidate"
-        break
-    fi
-done
+# Gunakan venv dari root
+VENV_DIR="$ROOT_DIR/.venv"
 
-if [ -n "$VENV_DIR" ]; then
-    echo "[*] Mengaktifkan virtual environment: $VENV_DIR"
-    source "$VENV_DIR/bin/activate"
-elif command -v python3 &>/dev/null; then
-    echo "[*] Menggunakan python3 sistem..."
-else
-    echo "[!] Python3 tidak ditemukan!"
+if [ ! -d "$VENV_DIR" ]; then
+    echo "[!] Virtual environment (.venv) belum dibuat di root."
+    echo "[*] Silakan jalankan ./start.sh di folder utama terlebih dahulu."
     exit 1
 fi
+
+echo "[*] Mengaktifkan virtual environment..."
+source "$VENV_DIR/bin/activate"
 
 cd "$SCRIPT_DIR"
 echo "[*] Working directory: $SCRIPT_DIR"

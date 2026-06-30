@@ -1,30 +1,32 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# Cari virtual environment (cek GRAB dulu, lalu SHOPEE, lalu root)
-VENV_DIR=""
-for candidate in "$SCRIPT_DIR/.venv" "$SCRIPT_DIR/GRAB/.venv" "$SCRIPT_DIR/SHOPEE/.venv"; do
-    if [ -d "$candidate" ]; then
-        VENV_DIR="$candidate"
-        break
-    fi
-done
-
-# Aktifkan venv atau gunakan python sistem
-if [ -n "$VENV_DIR" ]; then
-    echo "[*] Mengaktifkan virtual environment: $VENV_DIR"
-    source "$VENV_DIR/bin/activate"
-elif command -v python3 &>/dev/null; then
-    echo "[*] Menggunakan python3 sistem..."
-else
-    echo "[!] Python3 tidak ditemukan!"
+# Pastikan uv terinstall
+if ! command -v uv &> /dev/null; then
+    echo "[!] 'uv' tidak ditemukan di sistem."
+    echo "    Install dengan: curl -LsSf https://astral.sh/uv/install.sh | sh"
     read -p "Tekan Enter untuk keluar..." _
     exit 1
 fi
 
-cd "$SCRIPT_DIR"
+# Buat virtual environment jika belum ada
+if [ ! -d ".venv" ]; then
+    echo "[*] Membuat virtual environment baru menggunakan uv (.venv)..."
+    uv venv .venv
+fi
 
+echo "[*] Mengaktifkan virtual environment..."
+source .venv/bin/activate
+
+echo "[*] Memeriksa dan menginstall dependencies (pandas, openpyxl, playwright)..."
+uv pip install -q pandas openpyxl playwright
+
+# Pastikan browser playwright terinstall (tanpa meminta sudo)
+uv run playwright install chromium > /dev/null 2>&1
+
+echo "[*] Menjalankan CLI Utama..."
 python3 cli.py
 
 EXIT_CODE=$?
