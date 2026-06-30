@@ -46,7 +46,8 @@ uv run cli.py
 ### Main Menu Options
 1. **🟢 Grab**: Run Grab scraper, combine excel files, find/remove duplicates.
 2. **🟠 Shopee**: Run Shopee scraper, check output status.
-3. **🚀 Jalankan Semua**: Run both Grab and Shopee scrapers sequentially.
+3. **🔴 GoFood**: Run GoFood scraper, check output status.
+4. **🚀 Jalankan Semua**: Run Grab, Shopee, and GoFood scrapers sequentially.
 
 ## 📁 Project Structure
 

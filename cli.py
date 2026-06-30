@@ -37,6 +37,7 @@ def clear():
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 GRAB_DIR   = os.path.join(BASE_DIR, "GRAB")
 SHOPEE_DIR = os.path.join(BASE_DIR, "SHOPEE")
+GOFOOD_DIR = os.path.join(BASE_DIR, "GOFOOD")
 
 GRAB_CREDENTIALS = [
     {"name": "F1",   "username": "automationf1"},
@@ -373,6 +374,71 @@ def menu_shopee():
             wait()
 
 
+# ─── GOFOOD Menus ─────────────────────────────────────────────────────────────
+
+def gofood_run_scraper():
+    header("GoFood — Menjalankan Scraper")
+    info("Menjalankan scraper untuk GoFood...")
+    run_script(os.path.join(GOFOOD_DIR, "gofood_scraper.py"), cwd=GOFOOD_DIR)
+    wait()
+
+
+def gofood_check_output():
+    header("GoFood — Status Output")
+    output_dir = os.path.join(GOFOOD_DIR, "data")
+    section("File di data/")
+
+    if not os.path.exists(output_dir):
+        warning("Folder data/ belum ada. Jalankan scraper terlebih dahulu.")
+        wait()
+        return
+
+    import glob
+    files = sorted(glob.glob(os.path.join(output_dir, "*.xlsx")))
+    if not files:
+        warning("Belum ada file hasil.")
+    else:
+        try:
+            import pandas as pd
+            for f in files:
+                name = os.path.basename(f)
+                size = os.path.getsize(f)
+                try:
+                    df = pd.read_excel(f)
+                    rows = len(df)
+                    print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {rows:>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+                except Exception:
+                    print(c(f"  ? {name:<35}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
+        except ImportError:
+            for f in files:
+                name = os.path.basename(f)
+                print(c(f"  • {name}", WHITE))
+    wait()
+
+
+def menu_gofood():
+    while True:
+        header("GoFood Merchant Scraper")
+        section("Menu GoFood")
+        menu_item("1", "▶", "Jalankan Scraper",   "Ambil data outlet dari GoBiz/GoFood")
+        menu_item("2", "📁", "Status Output",       "Lihat ringkasan file hasil scraping")
+        divider()
+        menu_item("b", "↩", "Kembali ke Menu Utama")
+        print()
+
+        choice = prompt("Pilih menu")
+
+        if choice == "1":
+            gofood_run_scraper()
+        elif choice == "2":
+            gofood_check_output()
+        elif choice.lower() == "b":
+            break
+        else:
+            error("Pilihan tidak valid.")
+            wait()
+
+
 # ─── Main Menu ────────────────────────────────────────────────────────────────
 
 def run_all():
@@ -391,6 +457,9 @@ def run_all():
     section("Shopee Scraper")
     run_script(os.path.join(SHOPEE_DIR, "shopee_scraper.py"), cwd=SHOPEE_DIR)
 
+    section("GoFood Scraper")
+    run_script(os.path.join(GOFOOD_DIR, "gofood_scraper.py"), cwd=GOFOOD_DIR)
+
     section("Combine Grab Excel")
     run_script(os.path.join(GRAB_DIR, "combine_custom.py"), cwd=GRAB_DIR)
 
@@ -405,8 +474,9 @@ def main():
         print(c("  Platform\n", DIM))
         menu_item("1", "🟢", "Grab",    "Scraper & tools untuk Grab Merchant")
         menu_item("2", "🟠", "Shopee",  "Scraper untuk Shopee Food Partner")
+        menu_item("3", "🔴", "GoFood",  "Scraper untuk GoFood/GoBiz")
         divider()
-        menu_item("3", "🚀", "Jalankan Semua", "Grab + Shopee sekaligus")
+        menu_item("4", "🚀", "Jalankan Semua", "Grab + Shopee + GoFood sekaligus")
         divider()
         menu_item("q", "✖", "Keluar")
         print()
@@ -418,6 +488,8 @@ def main():
         elif choice == "2":
             menu_shopee()
         elif choice == "3":
+            menu_gofood()
+        elif choice == "4":
             run_all()
         elif choice.lower() in ("q", "exit", "quit", "0"):
             clear()
