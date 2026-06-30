@@ -263,11 +263,10 @@ def menu_grab():
 
 def shopee_select_outlets():
     """Pilih outlet Shopee yang ingin di-scrape (Via VB Pipeline)."""
-    # Ambil kredensial secara dinamis dari VB
+    # Ambil kredensial secara dinamis dari VB lokal
     import sys
-    vb_shopee_dir = "/mnt/DATA/Proyek/task-weekly/VB/shopee"
-    if vb_shopee_dir not in sys.path:
-        sys.path.append(vb_shopee_dir)
+    if SHOPEE_DIR not in sys.path:
+        sys.path.append(SHOPEE_DIR)
         
     try:
         from init_sessions import get_vb_portals
@@ -310,8 +309,8 @@ def shopee_run_scraper():
         return
 
     header("Shopee — Menjalankan VB Automation")
-    vb_shopee_script = "/mnt/DATA/Proyek/task-weekly/VB/shopee/run_baseline.py"
-    vb_shopee_dir = "/mnt/DATA/Proyek/task-weekly/VB/shopee"
+    vb_shopee_script = os.path.join(SHOPEE_DIR, "run_baseline.py")
+    vb_shopee_dir = SHOPEE_DIR
 
     if selected == "all":
         info("Menjalankan scraper untuk SEMUA outlet Shopee...")
@@ -466,7 +465,7 @@ def run_all():
     run_script(os.path.join(GRAB_DIR, "grab_merchant_scraper.py"), cwd=GRAB_DIR)
 
     section("Shopee Scraper (Via VB)")
-    run_script("/mnt/DATA/Proyek/task-weekly/VB/shopee/run_baseline.py", cwd="/mnt/DATA/Proyek/task-weekly/VB/shopee")
+    run_script(os.path.join(SHOPEE_DIR, "run_baseline.py"), cwd=SHOPEE_DIR)
 
     section("GoFood Scraper")
     run_script(os.path.join(GOFOOD_DIR, "gofood_scraper.py"), cwd=GOFOOD_DIR)

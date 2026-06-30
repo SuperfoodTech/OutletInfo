@@ -1,2 +1,3 @@
-2026/06/30-15:40:49.270 15e94 Creating DB /mnt/DATA/Proyek/Outlet Info/SHOPEE/data/chrome_profiles/portal_f/profile_portal_f/Service Worker/Database since it was missing.
-2026/06/30-15:40:49.308 15e94 Reusing MANIFEST /mnt/DATA/Proyek/Outlet Info/SHOPEE/data/chrome_profiles/portal_f/profile_portal_f/Service Worker/Database/MANIFEST-000001
+2026/06/30-15:46:33.268 16319 Reusing MANIFEST /mnt/DATA/Proyek/Outlet Info/SHOPEE/data/chrome_profiles/portal_f/profile_portal_f/Service Worker/Database/MANIFEST-000001
+2026/06/30-15:46:33.273 16319 Recovering log #3
+2026/06/30-15:46:33.277 16319 Reusing old log /mnt/DATA/Proyek/Outlet Info/SHOPEE/data/chrome_profiles/portal_f/profile_portal_f/Service Worker/Database/000003.log 
