@@ -77,6 +77,45 @@ def parse_selection(choice, max_val):
                 pass
     return sorted(list(selected))
 
+def combine_master(output_dir):
+    import pandas as pd
+    import glob
+    import shutil
+    import datetime
+
+    print("\n[*] Menggabungkan semua file ke 0master.xlsx...")
+    files = glob.glob(os.path.join(output_dir, "GOFOOD_outlets_*.xlsx"))
+    
+    if not files:
+        print("   ⚠️ Tidak ada file hasil scraping untuk digabung.")
+        return
+
+    all_dfs = []
+    for f in files:
+        if os.path.basename(f) == "0master.xlsx":
+            continue
+        try:
+            df = pd.read_excel(f)
+            all_dfs.append(df)
+        except Exception as e:
+            print(f"   ⚠️ Gagal membaca {f}: {e}")
+            
+    if all_dfs:
+        master_df = pd.concat(all_dfs, ignore_index=True)
+        master_path = os.path.join(output_dir, "0master.xlsx")
+        
+        # File versioning
+        if os.path.exists(master_path):
+            version_dir = os.path.join(output_dir, "versions")
+            os.makedirs(version_dir, exist_ok=True)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = os.path.join(version_dir, f"0master_v{timestamp}.xlsx")
+            shutil.copy2(master_path, backup_path)
+            print(f"   💾 Master lama di-backup ke: {backup_path}")
+            
+        master_df.to_excel(master_path, index=False)
+        print(f"   ✅ Penggabungan berhasil! Total {len(master_df)} baris disimpan di 0master.xlsx")
+
 def main():
     print("="*60)
     print("  🚀 GOFOOD OUTLET SCRAPER")
@@ -424,6 +463,12 @@ def main():
                 
         print("\n✅ Semua portal yang dipilih telah selesai diproses.")
         browser.close()
+        
+    # Lakukan penggabungan master jika seluruh portal dipilih
+    is_all_selected = len(target_portals) == len(portals) and len(portals) > 0
+    if is_all_selected:
+        output_dir = Path(__file__).parent / "data"
+        combine_master(str(output_dir))
 
 if __name__ == "__main__":
     main()
