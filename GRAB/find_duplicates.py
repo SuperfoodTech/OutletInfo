@@ -3,7 +3,7 @@ import pandas as pd
 import glob
 
 INPUT_FOLDER = os.path.join(os.path.dirname(__file__), "hasil_custom")
-MASTER_FILE = os.path.join(INPUT_FOLDER, "MASTER_ALL.xlsx")
+MASTER_FILE = os.path.join(INPUT_FOLDER, "0MASTER.xlsx")
 
 
 def find_duplicates():
@@ -19,12 +19,12 @@ def find_duplicates():
 
     # Tentukan kolom kunci untuk deteksi duplikat
     key_cols = []
-    for col in ["Merchant ID", "Item ID", "Nama Item"]:
+    for col in ["Store ID", "Merchant ID", "Item ID", "Nama Item"]:
         if col in df.columns:
             key_cols.append(col)
 
     if not key_cols:
-        print("[!] Tidak ada kolom kunci (Merchant ID / Item ID / Nama Item) ditemukan.")
+        print("[!] Tidak ada kolom kunci (Store ID / Merchant ID / Item ID / Nama Item) ditemukan.")
         return
 
     print(f"[*] Menggunakan kolom kunci: {key_cols}")

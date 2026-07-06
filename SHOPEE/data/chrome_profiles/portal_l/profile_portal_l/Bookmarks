@@ -1,0 +1,47 @@
+{
+   "checksum": "8bb0a6d4d661b0b981763a79f31df5a8",
+   "roots": {
+      "bookmark_bar": {
+         "children": [  ],
+         "date_added": "13426525627852322",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "0bc5d13f-2cba-5d74-951f-3f233fe6c908",
+         "id": "1",
+         "name": "Bookmarks bar",
+         "type": "folder"
+      },
+      "other": {
+         "children": [ {
+            "date_added": "13426525722480151",
+            "date_last_used": "0",
+            "guid": "eecc303d-f0a1-4a9e-ac4a-e590161516df",
+            "id": "5",
+            "meta_info": {
+               "power_bookmark_meta": ""
+            },
+            "name": "Shopee Partner",
+            "type": "url",
+            "url": "https://partner.business.accounts.shopee.co.id/authenticate/login/?lang=id&should_hide_back=true&state=https%3A%2F%2Fpartner.shopee.co.id%2F%3Fbusiness_next%3Dhttps%253A%252F%252Fpartner.shopee.co.id%252Flogin%252Fauth%26business_state%3Dhttps%253A%252F%252Fpartner.shopee.co.id%26business_client_id%3D1&client_id=5&next=https%3A%2F%2Fpartner.shopee.co.id%2Faccount%2Flogin%2Fauth"
+         } ],
+         "date_added": "13426525627852322",
+         "date_last_used": "0",
+         "date_modified": "13426525722480151",
+         "guid": "82b081ec-3dd3-529c-8475-ab6c344590dd",
+         "id": "2",
+         "name": "Other bookmarks",
+         "type": "folder"
+      },
+      "synced": {
+         "children": [  ],
+         "date_added": "13426525627852322",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "4cf2e351-0e85-532b-bb37-df045d8f8d0f",
+         "id": "3",
+         "name": "Mobile bookmarks",
+         "type": "folder"
+      }
+   },
+   "version": 1
+}

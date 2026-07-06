@@ -37,6 +37,7 @@ def clear():
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 GRAB_DIR   = os.path.join(BASE_DIR, "GRAB")
 SHOPEE_DIR = os.path.join(BASE_DIR, "SHOPEE")
+GOFOOD_DIR = os.path.join(BASE_DIR, "GOFOOD")
 
 GRAB_CREDENTIALS = [
     {"name": "F1",   "username": "automationf1"},
@@ -47,13 +48,6 @@ GRAB_CREDENTIALS = [
     {"name": "DE1S", "username": "automationde1s"},
     {"name": "JF1",  "username": "automationjf1"},
     {"name": "JF1S", "username": "automationjf1s"},
-]
-
-SHOPEE_CREDENTIALS = [
-    {"name": "F",  "username": "superfoodapp"},
-    {"name": "W",  "username": "wonderfoodapp"},
-    {"name": "L",  "username": "lokarasaapp"},
-    {"name": "D",  "username": "doeatapp"},
 ]
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
@@ -268,14 +262,28 @@ def menu_grab():
 # ─── SHOPEE Menus ─────────────────────────────────────────────────────────────
 
 def shopee_select_outlets():
-    """Pilih outlet Shopee yang ingin di-scrape."""
+    """Pilih outlet Shopee yang ingin di-scrape (Via VB Pipeline)."""
+    # Ambil kredensial secara dinamis dari VB lokal
+    import sys
+    if SHOPEE_DIR not in sys.path:
+        sys.path.append(SHOPEE_DIR)
+        
+    try:
+        from init_sessions import get_vb_portals
+        credentials = get_vb_portals()
+    except Exception as e:
+        error(f"Gagal mengambil kredensial dari VB: {e}")
+        credentials = []
+    
     header("Shopee — Pilih Outlet")
     section("Daftar Outlet")
 
     menu_item("0", "🔄", "Semua Outlet", "Jalankan scraping untuk semua outlet")
     divider()
-    for i, cred in enumerate(SHOPEE_CREDENTIALS, 1):
-        menu_item(str(i), "🏪", cred["name"], f"@{cred['username']}")
+    for i, cred in enumerate(credentials, 1):
+        display_name = cred.get("merchant_name", cred.get("account_name", ""))
+        user_info = cred.get('username') or cred.get('phone', '')
+        menu_item(str(i), "🏪", display_name, f"@{user_info}")
 
     print()
     menu_item("b", "↩", "Kembali")
@@ -287,8 +295,8 @@ def shopee_select_outlets():
         return None
     elif choice == "0":
         return "all"
-    elif choice.isdigit() and 1 <= int(choice) <= len(SHOPEE_CREDENTIALS):
-        return SHOPEE_CREDENTIALS[int(choice) - 1]
+    elif choice.isdigit() and 1 <= int(choice) <= len(credentials):
+        return credentials[int(choice) - 1]
     else:
         error("Pilihan tidak valid.")
         wait()
@@ -300,17 +308,20 @@ def shopee_run_scraper():
     if selected is None:
         return
 
-    header("Shopee — Menjalankan Scraper")
+    header("Shopee — Menjalankan VB Automation")
+    vb_shopee_script = os.path.join(SHOPEE_DIR, "run_baseline.py")
+    vb_shopee_dir = SHOPEE_DIR
 
     if selected == "all":
         info("Menjalankan scraper untuk SEMUA outlet Shopee...")
-        run_script(os.path.join(SHOPEE_DIR, "shopee_scraper.py"), cwd=SHOPEE_DIR)
+        run_script(vb_shopee_script, cwd=vb_shopee_dir)
     else:
-        info(f"Menjalankan scraper untuk outlet: {selected['name']}")
+        merchant_name = selected.get("merchant_name", "")
+        info(f"Menjalankan scraper untuk outlet: {merchant_name}")
         run_script(
-            os.path.join(SHOPEE_DIR, "shopee_scraper.py"),
-            cwd=SHOPEE_DIR,
-            extra_args=["--outlet", selected["name"]]
+            vb_shopee_script,
+            cwd=vb_shopee_dir,
+            extra_args=["--merchant", merchant_name]
         )
 
     wait()
@@ -373,6 +384,71 @@ def menu_shopee():
             wait()
 
 
+# ─── GOFOOD Menus ─────────────────────────────────────────────────────────────
+
+def gofood_run_scraper():
+    header("GoFood — Menjalankan Scraper")
+    info("Menjalankan scraper untuk GoFood...")
+    run_script(os.path.join(GOFOOD_DIR, "gofood_scraper.py"), cwd=GOFOOD_DIR)
+    wait()
+
+
+def gofood_check_output():
+    header("GoFood — Status Output")
+    output_dir = os.path.join(GOFOOD_DIR, "data")
+    section("File di data/")
+
+    if not os.path.exists(output_dir):
+        warning("Folder data/ belum ada. Jalankan scraper terlebih dahulu.")
+        wait()
+        return
+
+    import glob
+    files = sorted(glob.glob(os.path.join(output_dir, "*.xlsx")))
+    if not files:
+        warning("Belum ada file hasil.")
+    else:
+        try:
+            import pandas as pd
+            for f in files:
+                name = os.path.basename(f)
+                size = os.path.getsize(f)
+                try:
+                    df = pd.read_excel(f)
+                    rows = len(df)
+                    print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {rows:>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+                except Exception:
+                    print(c(f"  ? {name:<35}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
+        except ImportError:
+            for f in files:
+                name = os.path.basename(f)
+                print(c(f"  • {name}", WHITE))
+    wait()
+
+
+def menu_gofood():
+    while True:
+        header("GoFood Merchant Scraper")
+        section("Menu GoFood")
+        menu_item("1", "▶", "Jalankan Scraper",   "Ambil data outlet dari GoBiz/GoFood")
+        menu_item("2", "📁", "Status Output",       "Lihat ringkasan file hasil scraping")
+        divider()
+        menu_item("b", "↩", "Kembali ke Menu Utama")
+        print()
+
+        choice = prompt("Pilih menu")
+
+        if choice == "1":
+            gofood_run_scraper()
+        elif choice == "2":
+            gofood_check_output()
+        elif choice.lower() == "b":
+            break
+        else:
+            error("Pilihan tidak valid.")
+            wait()
+
+
 # ─── Main Menu ────────────────────────────────────────────────────────────────
 
 def run_all():
@@ -388,8 +464,11 @@ def run_all():
     section("Grab Scraper")
     run_script(os.path.join(GRAB_DIR, "grab_merchant_scraper.py"), cwd=GRAB_DIR)
 
-    section("Shopee Scraper")
-    run_script(os.path.join(SHOPEE_DIR, "shopee_scraper.py"), cwd=SHOPEE_DIR)
+    section("Shopee Scraper (Via VB)")
+    run_script(os.path.join(SHOPEE_DIR, "run_baseline.py"), cwd=SHOPEE_DIR)
+
+    section("GoFood Scraper")
+    run_script(os.path.join(GOFOOD_DIR, "gofood_scraper.py"), cwd=GOFOOD_DIR)
 
     section("Combine Grab Excel")
     run_script(os.path.join(GRAB_DIR, "combine_custom.py"), cwd=GRAB_DIR)
@@ -405,8 +484,9 @@ def main():
         print(c("  Platform\n", DIM))
         menu_item("1", "🟢", "Grab",    "Scraper & tools untuk Grab Merchant")
         menu_item("2", "🟠", "Shopee",  "Scraper untuk Shopee Food Partner")
+        menu_item("3", "🔴", "GoFood",  "Scraper untuk GoFood/GoBiz")
         divider()
-        menu_item("3", "🚀", "Jalankan Semua", "Grab + Shopee sekaligus")
+        menu_item("4", "🚀", "Jalankan Semua", "Grab + Shopee + GoFood sekaligus")
         divider()
         menu_item("q", "✖", "Keluar")
         print()
@@ -418,6 +498,8 @@ def main():
         elif choice == "2":
             menu_shopee()
         elif choice == "3":
+            menu_gofood()
+        elif choice == "4":
             run_all()
         elif choice.lower() in ("q", "exit", "quit", "0"):
             clear()
