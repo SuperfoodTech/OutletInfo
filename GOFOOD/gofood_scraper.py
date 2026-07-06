@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import getpass
@@ -8,6 +9,10 @@ import requests
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
+
+# Import formatter from GRAB
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'GRAB')))
+from format_excel import apply_formatting_and_sheets
 
 load_dotenv()
 
@@ -122,11 +127,30 @@ def combine_master(output_dir):
             print(f"   💾 Master lama di-backup ke: {backup_path}")
             
         master_df.to_excel(master_path, index=False)
-        print(f"   ✅ Penggabungan berhasil! Total {len(master_df)} baris disimpan di 0master.xlsx")
+        
+        # Create timestamped filenames like GRAB
+        timestamp = datetime.datetime.now().strftime("%Y%m%d %H%M")
+        raw_filename = f"GOFOOD {timestamp}.xlsx"
+        raw_path = os.path.join(output_dir, raw_filename)
+        
+        processed_filename = f"GOFOOD PROCESSED {timestamp}.xlsx"
+        processed_path = os.path.join(output_dir, processed_filename)
+        
+        # Apply formatting (without tabs) for the raw file
+        shutil.copy2(master_path, raw_path)
+        apply_formatting_and_sheets(raw_path, raw_path, create_tabs=False)
+        
+        # Apply formatting and tabs for the processed file
+        shutil.copy2(master_path, processed_path)
+        apply_formatting_and_sheets(processed_path, processed_path, create_tabs=True)
+        
+        print(f"   ✅ Penggabungan berhasil! File disimpan:")
+        print(f"      - {raw_filename} (Format Mentah)")
+        print(f"      - {processed_filename} (Format Processed + Tabs)")
         
         # Upload ke Drive jika URL tersedia
         if APP_SCRIPT_URL:
-            upload_to_drive(master_path)
+            upload_to_drive(processed_path)
         else:
             print("   ℹ️ Upload ke Google Drive dilewati (APP_SCRIPT_URL masih kosong).")
 
@@ -450,7 +474,7 @@ def main():
                             alamat = src.get('outlet_address', '')
                             
                             # Extract Group ID (if available)
-                            group_id = apps.get('goresto', {}).get('goresto_id', store_id)
+                            group_id = "" # Dikosongkan sesuai permintaan
                             
                             # Extract Bank Account
                             bank_acc = ""
@@ -487,7 +511,11 @@ def main():
                             out_file = output_dir / f"GOFOOD_outlets_{sanitized_email}.xlsx"
                             
                             df.to_excel(out_file, index=False)
-                            print(f"   💾 Data berhasil disimpan ke: {out_file}")
+                            
+                            # Apply formatting for individual pulls
+                            apply_formatting_and_sheets(str(out_file), str(out_file), create_tabs=False)
+                            
+                            print(f"   💾 Data berhasil disimpan dengan format ke: {out_file}")
                             print(f"   📊 Total baris: {len(df)}")
                             
                             # Upload file individual ke Drive

@@ -238,65 +238,7 @@ def process_portal(portal, global_ranges, report_dir):
             all_ok = False
             continue
 
-        # Poll export task until ready (max 30 min)
-        downloaded_path = None
-        poll_start = time.time()
-        while (time.time() - poll_start) < 1800:
-            time.sleep(10)
-            reports = client.get_wallet_report_list()
-            if reports is None:
-                continue
-            for rep in reports:
-                if rep.get("id") != matched_task_id:
-                    continue
-                status = rep.get("status")
-                if status == 3 and rep.get("download_url"):
-                    safe_merchant = merchant_name.replace(" ", "_")
-                    rep_name = (rep.get("name") or f"wallet_report_{matched_task_id}").replace(" ", "_")
-                    base_target_path = os.path.join(report_dir, f"{safe_merchant}_{rep_name}.xlsx")
-                    target_path = base_target_path
-                    version = 1
-                    while os.path.exists(target_path):
-                        version += 1
-                        name_part, ext_part = os.path.splitext(base_target_path)
-                        target_path = f"{name_part}-{version:02d}{ext_part}"
-                    log.info(
-                        f"📥 [PORTAL - {account_name}] Export task {matched_task_id} ready. "
-                        f"Downloading → {target_path}..."
-                    )
-                    if download_file(rep.get("download_url"), target_path):
-                        log.info(f"✅ [PORTAL - {account_name}] Download success: {rep_name}")
-                        history[h_key] = {
-                            "path": target_path,
-                            "merchant": merchant_name,
-                            "range": range_label,
-                            "source": "export_task",
-                            "task_id": matched_task_id,
-                            "fetched_at": datetime.now().isoformat(),
-                        }
-                        _save_history(history)
-                        downloaded_path = target_path
-                    break
-                elif status == 4:
-                    log.warning(
-                        f"⚠️ [PORTAL - {account_name}] Export task {matched_task_id} "
-                        f"failed (status 4 = no data). Skipping."
-                    )
-                    downloaded_path = None
-                    break
-            if downloaded_path is not None or (reports and any(
-                r.get("id") == matched_task_id and r.get("status") == 4 for r in reports
-            )):
-                break
-
-        if downloaded_path is None and not any(
-            r.get("id") == matched_task_id and r.get("status") == 4
-            for r in (client.get_wallet_report_list() or [])
-        ):
-            log.error(
-                f"❌ [PORTAL - {account_name}] Polling timed out for task {matched_task_id}."
-            )
-            all_ok = False
+        log.info(f"✅ [PORTAL - {account_name}] Export task {matched_task_id} successfully triggered/found for '{range_label}'. Skipping polling & download.")
 
     return all_ok
 
@@ -420,86 +362,7 @@ def run_pipeline():
                 except Exception as e:
                     log.error(f"❌ [PROGRESS] Portal '{portal['account_name']}' raised exception: {e}")
 
-    # ── 3. Phase 3: Merging to 0Master.xlsx ──
-    log.info("📊 [PROGRESS] PHASE 3: Merging all downloaded VB files to 0Master.xlsx...")
-    sheet_names = ['Overall', 'Order_Payment_Details', 'Adjustment', 'Ads_Deduction']
-    merged_sheets = {sheet: [] for sheet in sheet_names}
-    
-    financial_cols = {
-        'Overall': ['Amount'],
-        'Order_Payment_Details': [
-            'Order Amount', 'Merchant Service Charge', 'PB1', 'Merchant Surcharge Fee',
-            'Merchant Prepaid Subsidy', 'Platform Flash Sale Subsidy',
-            'Merchant Shipping Fee Voucher Subsidy', 'Food Direct Discount',
-            'Merchant Food Voucher Subsidy', 'Subtotal', 'Total', 'Commission', 'Net Income'
-        ],
-        'Adjustment': ['Wallet Adjustment Amount'],
-        'Ads_Deduction': ['Ads Bill Amount', 'Actual Ads Deduction Amount']
-    }
-    
-    xlsx_files = glob.glob(os.path.join(report_dir, "*.xlsx"))
-    xlsx_files.sort()
-    
-    def clean_shopee_monetary(val):
-        if pd.isna(val) or str(val).lower() == 'nan': return 0
-        s = str(val).strip()
-        if not s or s == '-': return 0
-        
-        s_cleaned = s.replace('.', '')
-        if ',' in s_cleaned:
-            s_cleaned = s_cleaned.split(',')[0]
-            
-        try:
-            return int(s_cleaned)
-        except:
-            return 0
-            
-    valid_safe_merchants = [p["merchant_name"].replace(" ", "_") for p in portals_to_run]
-
-    for fpath in xlsx_files:
-        filename = os.path.basename(fpath)
-        if filename.startswith("MASTER") or filename.startswith("0Master"):
-            continue
-            
-        if not any(filename.startswith(sm + "_") for sm in valid_safe_merchants):
-            continue
-            
-        try:
-            xls = pd.ExcelFile(fpath)
-            for sheet in sheet_names:
-                if sheet in xls.sheet_names:
-                    df = pd.read_excel(xls, sheet_name=sheet, dtype=str)
-                    if not df.empty:
-                        for col in financial_cols.get(sheet, []):
-                            if col in df.columns:
-                                df[col] = df[col].apply(clean_shopee_monetary)
-                        df.insert(0, 'Merchant Filter Name', filename)
-                        merged_sheets[sheet].append(df)
-        except Exception as e:
-            log.warning(f"⚠️ Failed to read {filename} for merging: {e}")
-            
-    has_data = any(len(dfs) > 0 for dfs in merged_sheets.values())
-    if has_data:
-        master_filepath = os.path.join(report_dir, "0Master.xlsx")
-        version = 1
-        while os.path.exists(master_filepath):
-            version += 1
-            master_filepath = os.path.join(report_dir, f"0Master-{version:02d}.xlsx")
-            
-        with pd.ExcelWriter(master_filepath, engine='openpyxl') as writer:
-            for sheet in sheet_names:
-                dfs = merged_sheets[sheet]
-                if dfs:
-                    sheet_df = pd.concat(dfs, ignore_index=True)
-                    sheet_df.to_excel(writer, sheet_name=sheet, index=False)
-                else:
-                    pd.DataFrame(columns=['Merchant Filter Name']).to_excel(writer, sheet_name=sheet, index=False)
-                    
-        log.info(f"✅ Successfully merged into: {os.path.basename(master_filepath)}")
-    else:
-        log.warning("⚠️ No valid data found to merge into MASTER.")
-
-    log.info("🎉 SUCCESS! Semua laporan mentah VB telah berhasil diunduh ke folder laporan dan di-merge ke 0Master.")
+    log.info("🎉 SUCCESS! Pipeline eksekusi laporan selesai (Tahap pengunduhan dan penggabungan dinonaktifkan).")
 
 if __name__ == "__main__":
     run_pipeline()
