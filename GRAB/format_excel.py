@@ -5,7 +5,7 @@ pandas.io.formats.excel.ExcelFormatter.header_style = None
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, Border
 
-def apply_formatting_and_sheets(input_file, output_file, create_tabs=False):
+def apply_formatting_and_sheets(input_file, output_file, create_tabs=True):
     try:
         # Read the input excel
         df = pd.read_excel(input_file)
@@ -18,8 +18,7 @@ def apply_formatting_and_sheets(input_file, output_file, create_tabs=False):
 
     # Check what the portal column is named. It could be "Sumber" or "Portal".
     portal_col = None
-    for col in ["Portal", "Sumber"]:
-        if col in df.columns:
+    for col in ["Nama Portal", "Portal", "Sumber"]:
             portal_col = col
             break
 
@@ -30,25 +29,24 @@ def apply_formatting_and_sheets(input_file, output_file, create_tabs=False):
         df = df.sort_values(['_sort_rank', portal_col]).drop(columns=['_sort_rank']).reset_index(drop=True)
 
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        # Drop the portal column if it exists before writing
-        df_to_write = df.drop(columns=[portal_col]) if portal_col else df
-        
-        # Write "Main Tab" sheet (formerly "All")
-        df_to_write.to_excel(writer, sheet_name='Main Tab', index=False)
+        # Write "Main Tab" sheet (including Portal/Sumber column)
+        df.to_excel(writer, sheet_name='Main Tab', index=False)
         
         # Write individual sheets for each portal in the specified order if requested
         if create_tabs and portal_col:
             for portal in desired_order:
-                portal_df = df[df[portal_col] == portal].drop(columns=[portal_col])
-                sheet_name = str(portal)[:31]
-                portal_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                portal_df = df[df[portal_col] == portal]
+                if not portal_df.empty:
+                    sheet_name = str(portal)[:31]
+                    portal_df.to_excel(writer, sheet_name=sheet_name, index=False)
                 
             # Create tabs for any other unexpected portals that might exist
             other_portals = [p for p in df[portal_col].dropna().unique() if p not in desired_order]
             for portal in sorted(other_portals):
-                portal_df = df[df[portal_col] == portal].drop(columns=[portal_col])
-                sheet_name = str(portal)[:31]
-                portal_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                portal_df = df[df[portal_col] == portal]
+                if not portal_df.empty:
+                    sheet_name = str(portal)[:31]
+                    portal_df.to_excel(writer, sheet_name=sheet_name, index=False)
     
     # Now apply formatting to all created sheets
     try:

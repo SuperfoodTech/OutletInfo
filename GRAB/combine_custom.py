@@ -24,7 +24,7 @@ def combine_excel_files():
     for filepath in all_files:
         filename = os.path.basename(filepath)
         # Parse base name and version
-        match = re.match(r"^([A-Za-z0-9]+)(?:_(\d+))?\.xlsx$", filename)
+        match = re.match(r"^(.*?)(?:_(\d+))?\.xlsx$", filename)
         if match:
             base_name = match.group(1)
             version = int(match.group(2)) if match.group(2) else 1
@@ -50,9 +50,9 @@ def combine_excel_files():
             df = pd.read_excel(filepath)
             # Hapus baris yang sepenuhnya kosong
             df.dropna(how="all", inplace=True)
-            # Tambah kolom sumber file jika belum ada (gunakan base_name agar tetap rapi, misal F1 bukan F1_2)
-            if "Sumber" not in df.columns:
-                df.insert(0, "Sumber", base_name)
+            # Hapus kolom Sumber jika ada agar sesuai objective 10 kolom murni
+            if "Sumber" in df.columns:
+                df.drop(columns=["Sumber"], inplace=True)
             print(f"    [+] {filename}: {len(df)} baris")
             dfs.append(df)
         except Exception as e:
@@ -64,9 +64,19 @@ def combine_excel_files():
 
     master_df = pd.concat(dfs, ignore_index=True)
 
-    # Hapus lagi baris kosong setelah penggabungan
-    master_df.dropna(how="all", inplace=True)
-    master_df.reset_index(drop=True, inplace=True)
+    # Hapus baris kosong & duplikat Store ID lintas file portal
+    if "Store ID" in master_df.columns:
+        master_df.dropna(subset=["Store ID"], inplace=True)
+        master_df.drop_duplicates(subset=["Store ID"], keep="first", inplace=True)
+
+    expected_cols = [
+        "Aplikator", "Nama Portal", "Group ID", "Nama Listing", "Link",
+        "Store ID", "Status Listing", "Alamat", "Nama Bank",
+        "Nama Pemilik Rekening", "Nomor Rekening"
+    ]
+    present_cols = [c for c in expected_cols if c in master_df.columns]
+    other_cols = [c for c in master_df.columns if c not in expected_cols]
+    master_df = master_df[present_cols + other_cols]
 
     master_df.to_excel(OUTPUT_FILE, index=False)
     print(f"\n[✓] Master file disimpan: {OUTPUT_FILE}")
