@@ -18,18 +18,29 @@ ENV/
 .aider*
 
 # Data output files
-GRAB/hasil_custom/*.xlsx
+GRAB/hasil_custom/
 SHOPEE/data/*.xlsx
-GOFOOD/data/*.xlsx
+SHOPEE/data/chrome_profiles/
+GOFOOD/data/
+GOFOOD/output/
+GOFOOD/master/
+GOFOOD/cache/
+
+# Credentials & CSV
+*.csv
 
 # Session files
-GOFOOD/session/*.json
+GOFOOD/session/
+GOFOOD/sessions/
+GRAB/sessions/
 
-# Debug files
+# Reports & debug files
 debug_*.json
 *_missing.txt
 _recovered/
 recover_helper.py
+council-report*.html
+council-transcript*.md
 
 # OS
 .DS_Store
@@ -41,3 +52,4 @@ Thumbs.db
 
 # Env
 .env
+

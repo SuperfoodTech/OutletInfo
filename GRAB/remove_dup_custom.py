@@ -19,7 +19,7 @@ def remove_duplicates_from_files():
     latest_files = {}
     for filepath in all_files:
         filename = os.path.basename(filepath)
-        match = re.match(r"^([A-Za-z0-9]+)(?:_(\d+))?\.xlsx$", filename)
+        match = re.match(r"^(.*?)(?:_(\d+))?\.xlsx$", filename)
         if match:
             base_name = match.group(1)
             version = int(match.group(2)) if match.group(2) else 1

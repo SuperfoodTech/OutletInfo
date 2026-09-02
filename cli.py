@@ -39,16 +39,7 @@ GRAB_DIR   = os.path.join(BASE_DIR, "GRAB")
 SHOPEE_DIR = os.path.join(BASE_DIR, "SHOPEE")
 GOFOOD_DIR = os.path.join(BASE_DIR, "GOFOOD")
 
-GRAB_CREDENTIALS = [
-    {"name": "F1",   "username": "automationf1"},
-    {"name": "F2S",  "username": "automationf2s"},
-    {"name": "W1",   "username": "automationw1"},
-    {"name": "L1",   "username": "automationl1"},
-    {"name": "L2",   "username": "automationl2"},
-    {"name": "DE1S", "username": "automationde1s"},
-    {"name": "JF1",  "username": "automationjf1"},
-    {"name": "JF1S", "username": "automationjf1s"},
-]
+# Kredensial Grab sekarang diambil secara dinamis via get_credentials_from_sheet
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 
@@ -58,7 +49,6 @@ def header(title="Outlet Info CLI"):
     print()
     print(c("╔" + "═" * width + "╗", CYAN, BOLD))
     print(c("║" + f"  🛒  {title}".center(width) + "║", CYAN, BOLD))
-    print(c("╚" + "═" * width + "╝", CYAN, BOLD))
     print()
 
 def section(title):
@@ -115,12 +105,36 @@ def run_script(script_path, cwd=None, extra_args=None):
 
 def grab_select_outlets():
     """Pilih outlet Grab yang ingin di-scrape."""
-    header("Grab — Pilih Outlet")
+    import sys
+    if GRAB_DIR not in sys.path:
+        sys.path.append(GRAB_DIR)
+        
+    header("Grab — Pilih Sumber Kredensial")
+    menu_item("1", "🏢", "Agency", "Kredensial Agency (Live Google Sheet)")
+    menu_item("2", "🏷️", "VB (Virtual Brand)", "Kredensial Virtual Brand / Dokumen Lain")
+    divider()
+    menu_item("b", "↩", "Kembali")
+    print()
+    src_choice = prompt("Pilih Sumber Kredensial [1/2]").lower()
+    if src_choice == "b":
+        return None, "agency"
+    
+    source_type = "vb" if src_choice == "2" else "agency"
+
+    try:
+        from grab_merchant_scraper import get_credentials_from_sheet
+        credentials = get_credentials_from_sheet(source_type=source_type, custom_url=custom_url)
+    except Exception as e:
+        error(f"Gagal mengambil kredensial Grab ({source_type}): {e}")
+        credentials = []
+
+    header(f"Grab — Pilih Outlet [{source_type.upper()}]")
     section("Daftar Outlet")
 
     menu_item("0", "🔄", "Semua Outlet", "Jalankan scraping untuk semua outlet")
+    menu_item("r", "▶", "Lanjutkan (Resume)", "Lewati yang sudah selesai ditarik")
     divider()
-    for i, cred in enumerate(GRAB_CREDENTIALS, 1):
+    for i, cred in enumerate(credentials, 1):
         menu_item(str(i), "🏪", cred["name"], f"@{cred['username']}")
 
     print()
@@ -130,38 +144,46 @@ def grab_select_outlets():
     choice = prompt("Pilih outlet")
 
     if choice.lower() == "b":
-        return None
+        return None, source_type
     elif choice == "0":
-        return "all"
-    elif choice.isdigit() and 1 <= int(choice) <= len(GRAB_CREDENTIALS):
-        return GRAB_CREDENTIALS[int(choice) - 1]
+        return "all", source_type
+    elif choice.lower() == "r":
+        return "resume", source_type
+    elif choice.isdigit() and 1 <= int(choice) <= len(credentials):
+        return credentials[int(choice) - 1], source_type
     else:
         error("Pilihan tidak valid.")
         wait()
         return grab_select_outlets()
 
-
 def grab_run_scraper():
     """Jalankan Grab scraper."""
-    selected = grab_select_outlets()
+    selected, source_type = grab_select_outlets()
     if selected is None:
         return
 
-    header("Grab — Menjalankan Scraper")
+    type_arg = ["--vb"] if source_type == "vb" else ["--agency"]
 
     if selected == "all":
-        info("Menjalankan scraper untuk SEMUA outlet Grab...")
-        run_script(
-            os.path.join(GRAB_DIR, "grab_merchant_scraper.py"),
-            cwd=GRAB_DIR
-        )
-    else:
-        info(f"Menjalankan scraper untuk outlet: {selected['name']}")
-        # Jalankan dengan argument outlet tertentu
+        info(f"Menjalankan scraper untuk SEMUA outlet Grab [{source_type.upper()}]...")
         run_script(
             os.path.join(GRAB_DIR, "grab_merchant_scraper.py"),
             cwd=GRAB_DIR,
-            extra_args=["--outlet", selected["name"]]
+            extra_args=["--all"] + type_arg
+        )
+    elif selected == "resume":
+        info(f"Melanjutkan penarikan untuk portal [{source_type.upper()}] yang belum selesai...")
+        run_script(
+            os.path.join(GRAB_DIR, "grab_merchant_scraper.py"),
+            cwd=GRAB_DIR,
+            extra_args=["--all"] + type_arg
+        )
+    else:
+        info(f"Menjalankan scraper untuk outlet: {selected['name']}")
+        run_script(
+            os.path.join(GRAB_DIR, "grab_merchant_scraper.py"),
+            cwd=GRAB_DIR,
+            extra_args=["--outlet", selected["name"]] + type_arg
         )
 
     wait()
@@ -295,6 +317,7 @@ def shopee_select_outlets():
         return None
     elif choice == "0":
         return "all"
+    
     elif choice.isdigit() and 1 <= int(choice) <= len(credentials):
         return credentials[int(choice) - 1]
     else:
@@ -395,61 +418,42 @@ def gofood_run_scraper():
 
 def gofood_check_output():
     header("GoFood — Status Output")
-    output_dir = os.path.join(GOFOOD_DIR, "data")
-    section("File di data/")
+    master_dir = os.path.join(GOFOOD_DIR, "master")
+    output_dir = os.path.join(GOFOOD_DIR, "output")
+    import pandas as pd
 
-    if not os.path.exists(output_dir):
-        warning("Folder data/ belum ada. Jalankan scraper terlebih dahulu.")
-        wait()
-        return
-
-    import glob
-    files = sorted(glob.glob(os.path.join(output_dir, "*.xlsx")))
-    if not files:
-        warning("Belum ada file hasil.")
-    else:
-        try:
-            import pandas as pd
-            for f in files:
+    # 1. Master Files
+    section("File Master di master/")
+    if os.path.exists(master_dir):
+            for f in m_files:
                 name = os.path.basename(f)
                 size = os.path.getsize(f)
                 try:
                     df = pd.read_excel(f)
-                    rows = len(df)
-                    print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {rows:>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
-                except Exception:
-                    print(c(f"  ? {name:<35}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
-        except ImportError:
-            for f in files:
-                name = os.path.basename(f)
-                print(c(f"  • {name}", WHITE))
+                size = os.path.getsize(f)
+                try:
+                    df = pd.read_excel(f)
+                    print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {len(df):>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+    section("Cache JSON di cache/")
+    if os.path.exists(cache_dir):
+        c_files = glob.glob(os.path.join(cache_dir, "gofood_portal_*.json"))
+        print(c(f"  📦 Total file cache portal tersimpan: {len(c_files)} file JSON", CYAN))
+    else:
+        print(c("  (Folder cache/ belum ada)", DIM))
     wait()
 
 
 def menu_gofood():
     while True:
         header("GoFood Merchant Scraper")
-        section("Menu GoFood")
-        menu_item("1", "▶", "Jalankan Scraper",   "Ambil data outlet dari GoBiz/GoFood")
-        menu_item("2", "📁", "Status Output",       "Lihat ringkasan file hasil scraping")
-        divider()
-        menu_item("b", "↩", "Kembali ke Menu Utama")
-        print()
-
-        choice = prompt("Pilih menu")
-
-        if choice == "1":
-            gofood_run_scraper()
-        elif choice == "2":
+            gofood_generate_master()
+        elif choice == "3":
             gofood_check_output()
         elif choice.lower() == "b":
             break
         else:
             error("Pilihan tidak valid.")
             wait()
-
-
-# ─── Main Menu ────────────────────────────────────────────────────────────────
 
 def run_all():
     """Jalankan semua scraper sekaligus."""
@@ -460,8 +464,6 @@ def run_all():
         info("Dibatalkan.")
         wait()
         return
-
-    section("Grab Scraper")
     run_script(os.path.join(GRAB_DIR, "grab_merchant_scraper.py"), cwd=GRAB_DIR)
 
     section("Shopee Scraper (Via VB)")
