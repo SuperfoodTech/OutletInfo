@@ -20,8 +20,8 @@ fi
 echo "[*] Mengaktifkan virtual environment..."
 source .venv/bin/activate
 
-echo "[*] Memeriksa dan menginstall dependencies (pandas, openpyxl, playwright, requests, python-dotenv, selenium, webdriver-manager)..."
-uv pip install -q pandas openpyxl playwright requests python-dotenv selenium webdriver-manager
+echo "[*] Memeriksa dan menginstall dependencies (pandas, openpyxl, playwright, requests, python-dotenv, selenium, webdriver-manager, curl_cffi)..."
+uv pip install -q pandas openpyxl playwright requests python-dotenv selenium webdriver-manager curl_cffi
 
 # Pastikan browser playwright terinstall (tanpa meminta sudo)
 uv run playwright install chromium > /dev/null 2>&1
