@@ -19,6 +19,9 @@ ENV/
 
 # Data output files
 GRAB/hasil_custom/
+GRAB/output/
+GRAB/master/
+GRAB/cache/
 SHOPEE/data/*.xlsx
 SHOPEE/data/chrome_profiles/
 GOFOOD/data/
@@ -41,6 +44,16 @@ _recovered/
 recover_helper.py
 council-report*.html
 council-transcript*.md
+generate_council*.py
+test_fast.py
+patch_*.py
+
+# Screenshots, locks & archives
+*.png
+*.zip
+.~lock.*
+*_backup.py
+*.log
 
 # OS
 .DS_Store

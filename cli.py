@@ -112,18 +112,24 @@ def grab_select_outlets():
     header("Grab — Pilih Sumber Kredensial")
     menu_item("1", "🏢", "Agency", "Kredensial Agency (Live Google Sheet)")
     menu_item("2", "🏷️", "VB (Virtual Brand)", "Kredensial Virtual Brand / Dokumen Lain")
+    menu_item("3", "☁️", "Vercel Sheet", "Kredensial Live CSV Vercel Sheet")
     divider()
     menu_item("b", "↩", "Kembali")
     print()
-    src_choice = prompt("Pilih Sumber Kredensial [1/2]").lower()
+    src_choice = prompt("Pilih Sumber Kredensial [1/2/3]").lower()
     if src_choice == "b":
         return None, "agency"
     
-    source_type = "vb" if src_choice == "2" else "agency"
+    if src_choice == "2":
+        source_type = "vb"
+    elif src_choice == "3":
+        source_type = "vercel"
+    else:
+        source_type = "agency"
 
     try:
         from grab_merchant_scraper import get_credentials_from_sheet
-        credentials = get_credentials_from_sheet(source_type=source_type, custom_url=custom_url)
+        credentials = get_credentials_from_sheet(source_type=source_type)
     except Exception as e:
         error(f"Gagal mengambil kredensial Grab ({source_type}): {e}")
         credentials = []
@@ -135,7 +141,7 @@ def grab_select_outlets():
     menu_item("r", "▶", "Lanjutkan (Resume)", "Lewati yang sudah selesai ditarik")
     divider()
     for i, cred in enumerate(credentials, 1):
-        menu_item(str(i), "🏪", cred["name"], f"@{cred['username']}")
+        menu_item(str(i), "🏪", f"{cred['name']} ({cred.get('owner', '-')})", f"@{cred['username']}")
 
     print()
     menu_item("b", "↩", "Kembali")
@@ -162,7 +168,12 @@ def grab_run_scraper():
     if selected is None:
         return
 
-    type_arg = ["--vb"] if source_type == "vb" else ["--agency"]
+    if source_type == "vb":
+        type_arg = ["--vb"]
+    elif source_type == "vercel":
+        type_arg = ["--vercel"]
+    else:
+        type_arg = ["--agency"]
 
     if selected == "all":
         info(f"Menjalankan scraper untuk SEMUA outlet Grab [{source_type.upper()}]...")
@@ -191,60 +202,63 @@ def grab_run_scraper():
 
 def grab_combine():
     header("Grab — Combine Excel")
-    info("Menggabungkan semua hasil scraping menjadi MASTER_ALL.xlsx...")
-    run_script(os.path.join(GRAB_DIR, "combine_custom.py"), cwd=GRAB_DIR)
-    wait()
-
-
-def grab_find_duplicates():
-    header("Grab — Cari Duplikat")
-    run_script(os.path.join(GRAB_DIR, "find_duplicates.py"), cwd=GRAB_DIR)
-    wait()
-
-
-def grab_remove_duplicates():
-    header("Grab — Hapus Duplikat")
-    warning("Ini akan MENGUBAH file Excel di hasil_custom/ secara permanen!")
-    confirm = prompt("Lanjutkan? (y/N)")
-    if confirm.lower() == "y":
-        run_script(os.path.join(GRAB_DIR, "remove_dup_custom.py"), cwd=GRAB_DIR)
-    else:
-        info("Dibatalkan.")
+    info("Menggabungkan semua data cache JSON Grab ke Master & Output...")
+    run_script(os.path.join(GRAB_DIR, "grab_merchant_scraper.py"), cwd=GRAB_DIR, extra_args=["--combine"])
     wait()
 
 
 def grab_check_output():
     """Tampilkan ringkasan file output Grab."""
     header("Grab — Status Output")
-    output_dir = os.path.join(GRAB_DIR, "hasil_custom")
-
-    section("File di hasil_custom/")
-    if not os.path.exists(output_dir):
-        warning("Folder hasil_custom/ belum ada. Jalankan scraper terlebih dahulu.")
-        wait()
-        return
-
+    master_dir = os.path.join(GRAB_DIR, "master")
+    output_dir = os.path.join(GRAB_DIR, "output")
+    cache_dir = os.path.join(GRAB_DIR, "cache")
     import glob
-    files = sorted(glob.glob(os.path.join(output_dir, "*.xlsx")))
-    if not files:
-        warning("Belum ada file hasil. Jalankan scraper terlebih dahulu.")
+    import pandas as pd
+
+    # 1. Master Files
+    section("File Master di master/")
+    if os.path.exists(master_dir):
+        m_files = sorted(glob.glob(os.path.join(master_dir, "*.xlsx")))
+        if not m_files:
+            print(c("  (Belum ada file master)", DIM))
+        for f in m_files:
+            name = os.path.basename(f)
+            size = os.path.getsize(f)
+            try:
+                df = pd.read_excel(f)
+                print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {len(df):>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+            except Exception:
+                print(c(f"  ? {name:<35}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
     else:
-        try:
-            import pandas as pd
-            for f in files:
-                name = os.path.basename(f)
-                size = os.path.getsize(f)
-                try:
-                    df = pd.read_excel(f)
-                    rows = len(df)
-                    print(c(f"  ✓ {name:<20}", GREEN) + c(f"  {rows:>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
-                except Exception:
-                    print(c(f"  ? {name:<20}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
-        except ImportError:
-            for f in files:
-                name = os.path.basename(f)
-                size = os.path.getsize(f)
-                print(c(f"  • {name}", WHITE) + c(f"  ({size//1024} KB)", DIM))
+        print(c("  (Folder master/ belum ada)", DIM))
+
+    # 2. Output Per-Owner
+    section("File Per-Owner di output/")
+    if os.path.exists(output_dir):
+        o_files = sorted(glob.glob(os.path.join(output_dir, "*.xlsx")))
+        if not o_files:
+            print(c("  (Belum ada file output per-owner)", DIM))
+        for f in o_files[-15:]:  # Tampilkan 15 file terbaru
+            name = os.path.basename(f)
+            size = os.path.getsize(f)
+            try:
+                df = pd.read_excel(f)
+                print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {len(df):>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+            except Exception:
+                print(c(f"  ? {name:<35}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
+        if len(o_files) > 15:
+            print(c(f"  ... dan {len(o_files) - 15} file lainnya.", DIM))
+    else:
+        print(c("  (Folder output/ belum ada)", DIM))
+
+    # 3. Cache JSON
+    section("Cache JSON di cache/")
+    if os.path.exists(cache_dir):
+        c_files = glob.glob(os.path.join(cache_dir, "grab_portal_*.json"))
+        print(c(f"  📦 Total file cache portal tersimpan: {len(c_files)} file JSON", CYAN))
+    else:
+        print(c("  (Folder cache/ belum ada)", DIM))
 
     wait()
 
@@ -254,10 +268,8 @@ def menu_grab():
         header("Grab Merchant Scraper")
         section("Menu Grab")
         menu_item("1", "▶", "Jalankan Scraper",       "Ambil data merchant dari portal Grab")
-        menu_item("2", "📊", "Combine Excel",           "Gabungkan semua file hasil ke MASTER_ALL.xlsx")
-        menu_item("3", "🔍", "Cari Duplikat",           "Temukan baris duplikat di MASTER_ALL.xlsx")
-        menu_item("4", "🗑", "Hapus Duplikat",          "Bersihkan duplikat dari file individual")
-        menu_item("5", "📁", "Status Output",           "Lihat ringkasan file hasil scraping")
+        menu_item("2", "📊", "Combine Excel",           "Gabungkan cache JSON ke master & output")
+        menu_item("3", "📁", "Status Output",           "Lihat ringkasan file hasil scraping")
         divider()
         menu_item("b", "↩", "Kembali ke Menu Utama")
         print()
@@ -269,10 +281,6 @@ def menu_grab():
         elif choice == "2":
             grab_combine()
         elif choice == "3":
-            grab_find_duplicates()
-        elif choice == "4":
-            grab_remove_duplicates()
-        elif choice == "5":
             grab_check_output()
         elif choice.lower() == "b":
             break
@@ -416,36 +424,84 @@ def gofood_run_scraper():
     wait()
 
 
+def gofood_generate_master():
+    header("GoFood — Combine Excel")
+    info("Menggabungkan semua data cache JSON GoFood ke Master & Output...")
+    run_script(os.path.join(GOFOOD_DIR, "gofood_scraper.py"), cwd=GOFOOD_DIR, extra_args=["--combine"])
+    wait()
+
+
 def gofood_check_output():
     header("GoFood — Status Output")
     master_dir = os.path.join(GOFOOD_DIR, "master")
     output_dir = os.path.join(GOFOOD_DIR, "output")
+    cache_dir = os.path.join(GOFOOD_DIR, "cache")
+    import glob
     import pandas as pd
 
     # 1. Master Files
     section("File Master di master/")
     if os.path.exists(master_dir):
-            for f in m_files:
-                name = os.path.basename(f)
-                size = os.path.getsize(f)
-                try:
-                    df = pd.read_excel(f)
-                size = os.path.getsize(f)
-                try:
-                    df = pd.read_excel(f)
-                    print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {len(df):>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+        m_files = sorted(glob.glob(os.path.join(master_dir, "*.xlsx")))
+        if not m_files:
+            print(c("  (Belum ada file master)", DIM))
+        for f in m_files:
+            name = os.path.basename(f)
+            size = os.path.getsize(f)
+            try:
+                df = pd.read_excel(f)
+                print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {len(df):>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+            except Exception:
+                print(c(f"  ? {name:<35}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
+    else:
+        print(c("  (Folder master/ belum ada)", DIM))
+
+    # 2. Output Per-Owner
+    section("File Per-Owner di output/")
+    if os.path.exists(output_dir):
+        o_files = sorted(glob.glob(os.path.join(output_dir, "*.xlsx")))
+        if not o_files:
+            print(c("  (Belum ada file output per-owner)", DIM))
+        for f in o_files[-15:]:
+            name = os.path.basename(f)
+            size = os.path.getsize(f)
+            try:
+                df = pd.read_excel(f)
+                print(c(f"  ✓ {name:<35}", GREEN) + c(f"  {len(df):>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+            except Exception:
+                print(c(f"  ? {name:<35}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
+        if len(o_files) > 15:
+            print(c(f"  ... dan {len(o_files) - 15} file lainnya.", DIM))
+    else:
+        print(c("  (Folder output/ belum ada)", DIM))
+
+    # 3. Cache JSON
     section("Cache JSON di cache/")
     if os.path.exists(cache_dir):
         c_files = glob.glob(os.path.join(cache_dir, "gofood_portal_*.json"))
         print(c(f"  📦 Total file cache portal tersimpan: {len(c_files)} file JSON", CYAN))
     else:
         print(c("  (Folder cache/ belum ada)", DIM))
+
     wait()
 
 
 def menu_gofood():
     while True:
         header("GoFood Merchant Scraper")
+        section("Menu GoFood")
+        menu_item("1", "▶", "Jalankan Scraper",       "Ambil data merchant dari portal GoFood")
+        menu_item("2", "📊", "Combine Excel",           "Gabungkan cache JSON ke master & output")
+        menu_item("3", "📁", "Status Output",           "Lihat ringkasan file hasil scraping")
+        divider()
+        menu_item("b", "↩", "Kembali ke Menu Utama")
+        print()
+
+        choice = prompt("Pilih menu")
+
+        if choice == "1":
+            gofood_run_scraper()
+        elif choice == "2":
             gofood_generate_master()
         elif choice == "3":
             gofood_check_output()

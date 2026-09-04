@@ -388,6 +388,7 @@ def deteksi_pesan_blokir_atau_error(page):
         try:
             body_text = page.locator("body").inner_text().lower()
             for kw in [
+                "diblok sementara", "terlalu banyak kesalahan", "coba lagi dalam",
                 "terlalu banyak percobaan", "akun anda terblokir", "akun diblokir", 
                 "terlalu banyak permintaan", "too many attempts", "temporarily blocked",
                 "coba lagi dalam beberapa saat", "silakan coba lagi nanti"
@@ -539,6 +540,16 @@ def save_formatted_excel(df, file_path):
     wb.save(file_path)
 
 
+def get_safe_cache_filename(portal_name):
+    """Menghasilkan nama file cache yang aman dari batasan panjang sistem operasi (maks 255 karakter)."""
+    import hashlib
+    clean = re.sub(r'[^a-zA-Z0-9_.-]', '_', str(portal_name).strip())
+    if len(clean) > 80:
+        h = hashlib.md5(str(portal_name).encode('utf-8')).hexdigest()[:8]
+        clean = clean[:70].rstrip('_') + f"_{h}"
+    return f"gofood_portal_{clean}.json"
+
+
 def get_credentials_from_sheet(source_type="agency", custom_url=None):
     """Mengambil daftar kredensial portal GoFood berdasarkan tipe sumber (Agency, VB, atau Vercel)."""
     import subprocess
@@ -675,8 +686,8 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
                 dedup_key = (owner_val.strip().lower(), primary_email)
                 
                 if dedup_key not in unique_portals:
-                    safe_portal_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', portal.strip())
-                    cache_file = CACHE_DIR / f"gofood_portal_{safe_portal_name}.json"
+                    safe_cache_name = get_safe_cache_filename(portal)
+                    cache_file = CACHE_DIR / safe_cache_name
                     unique_portals[dedup_key] = {
                         'owner': owner_val,
                         'brand': brand,
@@ -793,10 +804,8 @@ def combine_master(cache_dir=None, master_dir=None, output_dir=None, source_type
             
     if all_records:
         master_df = pd.DataFrame(all_records)
-        if "Store ID" in master_df.columns:
-            master_df.drop_duplicates(subset=["Store ID"], keep="first", inplace=True)
             
-        # Filter berdasarkan source_type agar data VB dan Agency tidak tercampur di master
+        # 1. Filter berdasarkan source_type TERLEBIH DAHULU agar data lintas tipe tidak saling memotong
         if source_type:
             st = str(source_type).strip().lower()
             if 'Nama Pemilik' in master_df.columns:
@@ -804,15 +813,30 @@ def combine_master(cache_dir=None, master_dir=None, output_dir=None, source_type
                     master_df = master_df[master_df['Nama Pemilik'] != 'VB']
                 elif st == 'vb':
                     master_df = master_df[master_df['Nama Pemilik'] == 'VB']
+                elif st == 'vercel':
+                    master_df = master_df[master_df['Nama Pemilik'] != 'VB']
+
+        # 2. Deduplikasi Store ID dalam lingkup sumber yang dipilih
+        if "Store ID" in master_df.columns:
+            master_df.drop_duplicates(subset=["Store ID"], keep="first", inplace=True)
 
         if master_df.empty:
             print("   ⚠️ Tidak ada baris data setelah pemfilteran source_type.")
             return
 
-        master_filename = "0master.xlsx" if (str(source_type).strip().lower() != "vb") else "VB_master.xlsx"
+        st = str(source_type).strip().lower() if source_type else "agency"
+        if st == "vb":
+            tag = "VB"
+        elif st == "vercel":
+            tag = "Vercel"
+        else:
+            tag = "Agency"
+
+        timestamp_name = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
+        master_filename = f"{timestamp_name} {tag}_master.xlsx"
         master_path = master_dir / master_filename
         
-        # File versioning
+        # File versioning jika file dengan nama sama sudah ada
         if master_path.exists():
             version_dir = master_dir / "versions"
             version_dir.mkdir(parents=True, exist_ok=True)
@@ -821,8 +845,14 @@ def combine_master(cache_dir=None, master_dir=None, output_dir=None, source_type
             shutil.copy2(str(master_path), str(backup_path))
             print(f"   💾 Master lama di-backup ke: {backup_path.name}")
             
-        # Simpan master menggunakan template YYYY-MM-DD HH_MM Nama Pemilik.xlsx
+        # Simpan master bertimestamp (YYYY-MM-DD HH_MM [Tipe]_master.xlsx)
         save_formatted_excel(master_df, str(master_path))
+
+        # Simpan juga salinan statis [Tipe]_master.xlsx dan 0master.xlsx (khusus Agency) untuk kompatibilitas
+        static_master_path = master_dir / f"{tag}_master.xlsx"
+        save_formatted_excel(master_df, str(static_master_path))
+        if tag == "Agency":
+            save_formatted_excel(master_df, str(master_dir / "0master.xlsx"))
         
         timestamp_name = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
         
@@ -888,8 +918,227 @@ def extract_gofood_rest_id(src, store_id):
     return ""
 
 
+def fetch_gobiz_merchants_fast(access_token, cookies=None, page_size=1000):
+    """
+    Menarik data outlet GoBiz langsung via REST API menggunakan curl_cffi
+    dengan impersonate='chrome120' untuk proteksi TLS/WAF dan kecepatan maksimal (tanpa browser).
+    """
+    if not access_token:
+        return False, 401, [], "No access token provided"
+
+    is_curl_cffi = False
+    try:
+        from curl_cffi import requests as cffi_requests
+        is_curl_cffi = True
+    except ImportError:
+        import requests as cffi_requests
+
+    if not str(access_token).startswith("Bearer "):
+        token_header = f"Bearer {access_token}"
+    else:
+        token_header = str(access_token)
+
+    headers = {
+        'Accept': 'application/json, text/plain, */*',
+        'Authentication-Type': 'go-id',
+        'Authorization': token_header,
+        'Content-Type': 'application/json',
+        'Origin': 'https://portal.gofoodmerchant.co.id',
+        'Referer': 'https://portal.gofoodmerchant.co.id/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
+
+    cookie_dict = {}
+    if cookies:
+        if isinstance(cookies, list):
+            for c in cookies:
+                if isinstance(c, dict) and 'name' in c and 'value' in c:
+                    cookie_dict[c['name']] = c['value']
+        elif isinstance(cookies, dict):
+            cookie_dict = cookies
+
+    all_hits = []
+    from_offset = 0
+    max_retries = 3
+
+    while True:
+        payload = {
+            "from": from_offset,
+            "size": page_size
+        }
+        
+        success = False
+        last_err = ""
+        status_code = 0
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                post_kwargs = {
+                    'headers': headers,
+                    'cookies': cookie_dict,
+                    'json': payload,
+                    'timeout': 20
+                }
+                if is_curl_cffi:
+                    post_kwargs['impersonate'] = "chrome120"
+
+                if hasattr(cffi_requests, 'Session'):
+                    sess = cffi_requests.Session()
+                    resp = sess.post(
+                        'https://api.gobiz.co.id/v1/merchants/search',
+                        **post_kwargs
+                    )
+                else:
+                    resp = cffi_requests.post(
+                        'https://api.gobiz.co.id/v1/merchants/search',
+                        **post_kwargs
+                    )
+                
+                status_code = resp.status_code
+                if status_code == 200:
+                    data = resp.json()
+                    hits = []
+                    if isinstance(data, dict):
+                        if 'hits' in data and isinstance(data['hits'], list):
+                            hits = data['hits']
+                        elif 'data' in data and isinstance(data['data'], list):
+                            hits = data['data']
+                    
+                    all_hits.extend(hits)
+                    success = True
+                    
+                    # Cek apakah masih ada data di halaman berikutnya
+                    total_count = data.get('total', len(hits)) if isinstance(data, dict) else len(hits)
+                    if len(hits) < page_size or len(all_hits) >= total_count:
+                        return True, 200, all_hits, ""
+                    else:
+                        from_offset += page_size
+                        break
+                        
+                elif status_code == 401:
+                    return False, 401, [], "Session expired / Unauthorized (401)"
+                elif status_code == 403:
+                    return False, 403, [], "Forbidden / WAF Blocked (403)"
+                else:
+                    last_err = f"HTTP {status_code}: {resp.text[:200]}"
+                    time.sleep(1)
+            except Exception as e:
+                last_err = str(e)
+                time.sleep(1)
+
+        if not success:
+            if all_hits:
+                return True, 200, all_hits, f"Partial fetch with error: {last_err}"
+            return False, status_code or 500, [], last_err
+
+
+def transform_gobiz_hits(hits, owner_name, portal_name, brand_name):
+    """Mengubah hits dari GoBiz API search menjadi format standar listing outlet 17 kolom."""
+    outlets_data = []
+    for item in hits:
+        src = item.get('_source', item) if isinstance(item, dict) else {}
+        nama = src.get('outlet_name') or src.get('merchant_name', 'Unknown')
+        store_id = src.get('id', '')
+        
+        status = "Unknown"
+        apps = src.get('applications', {}) if isinstance(src.get('applications'), dict) else {}
+        if 'goresto' in apps and isinstance(apps['goresto'], dict):
+            status = apps['goresto'].get('status', status)
+            
+        alamat = src.get('outlet_address', '')
+        
+        # Ekstraksi Group ID
+        tags = src.get('tags', {}) if isinstance(src.get('tags'), dict) else {}
+        external_ids = src.get('external_ids', {}) if isinstance(src.get('external_ids'), dict) else {}
+        group_id = ""
+        for container in [tags, external_ids]:
+            if isinstance(container, dict):
+                entity_list = container.get('entity', [])
+                brand_list = container.get('brand', [])
+                if isinstance(entity_list, list) and entity_list:
+                    group_id = str(entity_list[0])
+                    break
+                elif isinstance(brand_list, list) and brand_list:
+                    group_id = str(brand_list[0])
+                    break
+        if not group_id:
+            group_id = str(src.get('partner_id', '') or '')
+        
+        rest_id = extract_gofood_rest_id(src, store_id)
+        gofood_link = f"http://gofood.co.id/surabaya/restaurant/{rest_id}" if rest_id else ""
+        
+        bank_no = ""
+        bank_name = ""
+        acc_name = ""
+        if 'bank_account' in src and isinstance(src['bank_account'], dict):
+            bank_no = str(src['bank_account'].get('account_no', '') or '')
+            bank_name = src['bank_account'].get('bank_name', '')
+            acc_name = src['bank_account'].get('account_name', '')
+                
+        outlets_data.append({
+            'Nama Pemilik': owner_name,
+            'Nama Brand': brand_name or owner_name,
+            'Aplikator': 'GoFood',
+            'Nama Portal': portal_name,
+            'Group ID': group_id,
+            'Nama Listing': nama,
+            'Link': gofood_link,
+            'Store ID': store_id,
+            'Status Listing': status,
+            'Alamat': alamat,
+            'Nama Bank': bank_name,
+            'Nama Pemilik Rekening': acc_name,
+            'Nomor Rekening': str(bank_no) if bank_no else ""
+        })
+    return outlets_data
+
+
+def save_portal_results(outlets_data, owner_name, portal_name, brand_name, email, source_type):
+    """Menyimpan data portal ke cache JSON dan output Excel per-owner."""
+    if not outlets_data:
+        print(f"   ⚠️ Tidak ada data outlet untuk disimpan pada portal '{portal_name}'.")
+        return None, None
+        
+    safe_cache_name = get_safe_cache_filename(portal_name)
+    safe_owner = re.sub(r'[^a-zA-Z0-9_.-]', '_', owner_name.strip())
+    
+    # 1. Simpan ke Cache JSON
+    cache_json_file = CACHE_DIR / safe_cache_name
+    cache_payload = {
+        'portal': portal_name,
+        'brand': brand_name or owner_name,
+        'owner': owner_name,
+        'source_type': str(source_type).upper(),
+        'email': email,
+        'timestamp': datetime.datetime.now().isoformat(),
+        'outlets': outlets_data
+    }
+    try:
+        with open(cache_json_file, 'w', encoding='utf-8') as jf:
+            json.dump(cache_payload, jf, indent=2, ensure_ascii=False)
+        print(f"   💾 Cache portal disimpan di cache/: {cache_json_file.name}")
+    except Exception as e:
+        print(f"   ⚠️ Gagal menyimpan cache JSON: {e}")
+    
+    # 2. Simpan ke Output Excel
+    import pandas as pd
+    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
+    owner_df = pd.DataFrame(outlets_data)
+    if 'Store ID' in owner_df.columns:
+        owner_df.drop_duplicates(subset=["Store ID"], keep="first", inplace=True)
+        
+    owner_file = OUTPUT_DIR / f"{timestamp_str} {safe_owner}.xlsx"
+    save_formatted_excel(owner_df, str(owner_file))
+    print(f"   💾 File Owner '{owner_name}' tersimpan di output/: {owner_file.name} (Total: {len(owner_df)} outlet)")
+    
+    if APP_SCRIPT_URL:
+        upload_to_drive(str(owner_file))
+        
+    return cache_json_file, owner_file
+
+
 def run_manual_mode():
-    """Mode manual: Membuka browser non-headless agar user login sendiri, lalu scrape saat di dashboard."""
+    """Mode manual: Membuka browser non-headless agar user login sendiri, lalu scrape via curl_cffi saat di dashboard."""
     print("\n" + "=" * 60)
     print("  🌐 GOFOOD SCRAPER — MANUAL LOGIN MODE")
     print("=" * 60)
@@ -961,140 +1210,23 @@ def run_manual_mode():
             
         print("🎉 Token login berhasil didapatkan!")
         
-        # Simpan sesi
+        # Simpan sesi untuk dipakai lagi di masa mendatang
         session_id = f"manual_{re.sub(r'[^a-zA-Z0-9_.-]', '_', owner_name.lower())}"
         save_gofood_session(session_id, cookies, access_token)
         
-        # Ekstraksi data via GoBiz API Search
-        if not access_token.startswith("Bearer "):
-            token_header = "Bearer " + access_token
-        else:
-            token_header = access_token
-            
-        payload_str = json.dumps({
-            "from": 0,
-            "size": 1000
-        })
+        # Tutup browser segera untuk menghemat RAM & CPU
+        browser.close()
         
-        print(f"[*] Mengambil data outlet dari GoBiz API untuk '{owner_name}'...")
-        try:
-            api_response = page.evaluate("""async ({token, payload}) => {
-                try {
-                    const res = await fetch('https://api.gobiz.co.id/v1/merchants/search', {
-                        method: 'POST',
-                        headers: {
-                            'Accept': 'application/json, text/plain, */*',
-                            'Authentication-Type': 'go-id',
-                            'Authorization': token,
-                            'Content-Type': 'application/json'
-                        },
-                        body: payload
-                    });
-                    return await res.json();
-                } catch (e) {
-                    return { error: e.message };
-                }
-            }""", {"token": token_header, "payload": payload_str})
-            
-            outlets_data = []
-            hits = []
-            if api_response and 'hits' in api_response:
-                hits = api_response['hits']
-            elif api_response and 'data' in api_response:
-                hits = api_response['data']
-                
-            if hits:
-                print(f"   ✅ Berhasil menarik {len(hits)} data outlet!")
-                for item in hits:
-                    src = item.get('_source', item)
-                    nama = src.get('outlet_name') or src.get('merchant_name', 'Unknown')
-                    store_id = src.get('id', '')
-                    
-                    status = "Unknown"
-                    apps = src.get('applications', {}) if isinstance(src.get('applications'), dict) else {}
-                    if 'goresto' in apps and isinstance(apps['goresto'], dict):
-                        status = apps['goresto'].get('status', status)
-                        
-                    alamat = src.get('outlet_address', '')
-                    
-                    # Group ID
-                    tags = src.get('tags', {}) if isinstance(src.get('tags'), dict) else {}
-                    external_ids = src.get('external_ids', {}) if isinstance(src.get('external_ids'), dict) else {}
-                    group_id = ""
-                    for container in [tags, external_ids]:
-                        if isinstance(container, dict):
-                            entity_list = container.get('entity', [])
-                            brand_list = container.get('brand', [])
-                            if isinstance(entity_list, list) and entity_list:
-                                group_id = str(entity_list[0])
-                                break
-                            elif isinstance(brand_list, list) and brand_list:
-                                group_id = str(brand_list[0])
-                                break
-                    if not group_id:
-                        group_id = str(src.get('partner_id', '') or '')
-                    
-                    rest_id = extract_gofood_rest_id(src, store_id)
-                    gofood_link = f"http://gofood.co.id/surabaya/restaurant/{rest_id}" if rest_id else ""
-                    
-                    bank_no = ""
-                    bank_name = ""
-                    acc_name = ""
-                    if 'bank_account' in src and isinstance(src['bank_account'], dict):
-                        bank_no = str(src['bank_account'].get('account_no', '') or '')
-                        bank_name = src['bank_account'].get('bank_name', '')
-                        acc_name = src['bank_account'].get('account_name', '')
-                            
-                    outlets_data.append({
-                        'Nama Pemilik': owner_name,
-                        'Nama Brand': owner_name,
-                        'Aplikator': 'GoFood',
-                        'Nama Portal': portal_name,
-                        'Group ID': group_id,
-                        'Nama Listing': nama,
-                        'Link': gofood_link,
-                        'Store ID': store_id,
-                        'Status Listing': status,
-                        'Alamat': alamat,
-                        'Nama Bank': bank_name,
-                        'Nama Pemilik Rekening': acc_name,
-                        'Nomor Rekening': str(bank_no) if bank_no else ""
-                    })
-                
-                # Simpan ke cache JSON
-                safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', owner_name.strip())
-                cache_json_file = CACHE_DIR / f"gofood_portal_{safe_name}.json"
-                cache_payload = {
-                    'portal': portal_name,
-                    'brand': owner_name,
-                    'owner': owner_name,
-                    'source_type': 'MANUAL',
-                    'email': 'manual_login',
-                    'timestamp': datetime.datetime.now().isoformat(),
-                    'outlets': outlets_data
-                }
-                with open(cache_json_file, 'w', encoding='utf-8') as jf:
-                    json.dump(cache_payload, jf, indent=2, ensure_ascii=False)
-                print(f"   💾 Cache portal disimpan di cache/: {cache_json_file.name}")
-                
-                # Simpan ke output Excel
-                import pandas as pd
-                timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
-                owner_df = pd.DataFrame(outlets_data)
-                if 'Store ID' in owner_df.columns:
-                    owner_df.drop_duplicates(subset=["Store ID"], keep="first", inplace=True)
-                owner_file = OUTPUT_DIR / f"{timestamp_str} {safe_name}.xlsx"
-                save_formatted_excel(owner_df, str(owner_file))
-                print(f"\n   💾 File Owner '{owner_name}' berhasil dibuat di output/: {owner_file.name} (Total: {len(owner_df)} outlet)")
-                
-                if APP_SCRIPT_URL:
-                    upload_to_drive(str(owner_file))
-            else:
-                print(f"   ⚠️ API Response tidak mengembalikan data outlet: {api_response}")
-        except Exception as e:
-            print(f"   ⚠️ Terjadi kesalahan saat menarik data: {e}")
-        finally:
-            browser.close()
+    # Ekstraksi cepat menggunakan curl_cffi dengan Chrome TLS impersonation
+    print(f"\n⚡ [FAST EXTRACTION] Mengambil data outlet untuk '{owner_name}' via curl_cffi...")
+    ok, status, hits, err = fetch_gobiz_merchants_fast(access_token, cookies=cookies)
+    
+    if ok and hits:
+        print(f"   ✅ Berhasil menarik {len(hits)} data outlet!")
+        outlets = transform_gobiz_hits(hits, owner_name, portal_name, owner_name)
+        save_portal_results(outlets, owner_name, portal_name, owner_name, "manual_login", "MANUAL")
+    else:
+        print(f"   ❌ Gagal menarik data outlet: {err}")
 
 
 def main():
@@ -1324,10 +1456,64 @@ def main():
             print(f"  📧 Emails  : {', '.join(emails_to_try)}")
             print(f"{'='*60}")
 
+            # ----------------------------------------------------
+            # 1. FAST PATH: Uji apakah sesi aktif ada di disk dan valid via curl_cffi
+            # ----------------------------------------------------
+            fast_path_success = False
+            for email in emails_to_try:
+                cached_data = load_gofood_session(email)
+                if cached_data and cached_data.get('access_token'):
+                    print(f"   ⚡ [FAST PATH] Menguji token sesi aktif untuk {email} via curl_cffi...")
+                    ok, status, hits, err = fetch_gobiz_merchants_fast(
+                        cached_data['access_token'],
+                        cookies=cached_data.get('cookies')
+                    )
+                    if ok and hits:
+                        print(f"   🎉 [FAST PATH BERHASIL] Berhasil menarik {len(hits)} data outlet dalam < 1 detik (tanpa membuka browser)!")
+                        brand_str = target.get('brand', portal_name_str.split(' - ')[0] if ' - ' in portal_name_str else portal_name_str)
+                        outlets_data = transform_gobiz_hits(hits, owner_name_str, portal_name_str, brand_str)
+                        
+                        if outlets_data:
+                            safe_cache_name = get_safe_cache_filename(portal_name_str)
+                            cache_json_file = CACHE_DIR / safe_cache_name
+                            cache_payload = {
+                                'portal': portal_name_str,
+                                'brand': brand_str,
+                                'owner': owner_name_str,
+                                'source_type': source_type.upper(),
+                                'email': email,
+                                'timestamp': datetime.datetime.now().isoformat(),
+                                'outlets': outlets_data
+                            }
+                            try:
+                                with open(cache_json_file, 'w', encoding='utf-8') as jf:
+                                    json.dump(cache_payload, jf, indent=2, ensure_ascii=False)
+                                print(f"   💾 Cache portal disimpan di cache/: {cache_json_file.name} ({len(outlets_data)} outlet)")
+                            except Exception as e:
+                                print(f"   ⚠️ Gagal menyimpan cache JSON: {e}")
+                                
+                            if owner_name_str not in owner_outlets_collected:
+                                owner_outlets_collected[owner_name_str] = []
+                            owner_outlets_collected[owner_name_str].extend(outlets_data)
+                            
+                        completed_portals.add(portal_name_str)
+                        fast_path_success = True
+                        break
+                    else:
+                        print(f"   ⚠️ Sesi {email} tidak valid / kedaluwarsa ({err}). Melanjutkan ke browser auth...")
+
+            if fast_path_success:
+                continue
+
+            # ----------------------------------------------------
+            # 2. BROWSER AUTH FALLBACK: Buka Playwright untuk autentikasi jika sesi kedaluwarsa
+            # ----------------------------------------------------
+            print(f"   🌐 [BROWSER AUTH] Membuka browser untuk autentikasi portal '{portal_name_str}'...")
             access_token = None
             session_loaded_successfully = False
             logged_in_email = None
             portal_encountered_ban = False
+            cookies_collected = []
 
             context = browser.new_context(
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -1338,353 +1524,308 @@ def main():
                 route.abort() if route.request.resource_type in ["image", "media", "font"] or any(t in route.request.url for t in ["google-analytics", "analytics", "doubleclick", "clarity.ms", "hotjar", "crisp.chat", "freshchat"]) else route.continue_()
             ))
 
-            # 1. Check cached session
-            for email in emails_to_try:
-                cached_data = load_gofood_session(email)
-                if cached_data and cached_data.get('cookies'):
-                    try:
-                        print(f"   🔑 Ditemukan sesi aktif untuk {email}. Mencoba memuat sesi...")
-                        context.add_cookies(cached_data['cookies'])
-                        
-                        page = context.new_page()
-                        page.goto("https://portal.gofoodmerchant.co.id/dashboard", wait_until="domcontentloaded")
-                        time.sleep(1.5)
-                        
-                        if "/auth/login" not in page.url:
-                            print(f"   ✅ Sesi berhasil dimuat! Melewati login OTP untuk {email}.")
-                            access_token = cached_data.get('access_token')
-                            session_loaded_successfully = True
-                            logged_in_email = email
-                            break
-                        else:
-                            print(f"   ⚠️ Sesi kedaluwarsa untuk {email}. Melakukan login ulang...")
-                            context.clear_cookies()
-                            page.close()
-                    except Exception as e:
-                        print(f"   ⚠️ Gagal memuat sesi: {e}. Melakukan login ulang...")
-                        try:
-                            context.clear_cookies()
-                        except Exception:
-                            pass
+            for email_index, current_email in enumerate(emails_to_try, 1):
+                if current_email in banned_emails:
+                    print(f"   ⏭️ Melewati email '{current_email}' karena sedang ter-limit.")
+                    continue
 
-            # 2. Login otomatis via Password atau OTP
-            if not session_loaded_successfully:
-                for email_index, current_email in enumerate(emails_to_try, 1):
-                    if current_email in banned_emails:
-                        print(f"   ⏭️ Melewati email '{current_email}' karena sedang ter-limit.")
-                        continue
+                print(f"\n   ➡️ [Email: {current_email}] Membuka halaman login email... (Percobaan {email_index}/{len(emails_to_try)})")
+                try:
+                    page = context.new_page()
+                    page.goto("https://portal.gofoodmerchant.co.id/auth/login/email", wait_until="domcontentloaded")
+                    time.sleep(2)
 
-                    print(f"\n   ➡️ [Email: {current_email}] Membuka halaman login email... (Percobaan {email_index}/{len(emails_to_try)})")
-                    try:
-                        page = context.new_page()
-                        page.goto("https://portal.gofoodmerchant.co.id/auth/login/email", wait_until="domcontentloaded")
-                        time.sleep(2)
+                    # Handle halaman awal
+                    if page.locator(":text('Pilih Akun')").count() > 0:
+                        page.locator(":text('Pilih Akun')").first.click()
+                        time.sleep(1)
 
-                        # Handle halaman awal
-                        if page.locator(":text('Pilih Akun')").count() > 0:
-                            page.locator(":text('Pilih Akun')").first.click()
-                            time.sleep(1)
+                    # Cek input email
+                    email_input = page.locator("input[type='email'], input[name='email'], input[placeholder*='email' i]").first
+                    if email_input.count() == 0:
+                        email_input = page.locator("input").first
 
-                        # Cek input email
-                        email_input = page.locator("input[type='email'], input[name='email'], input[placeholder*='email' i]").first
-                        if email_input.count() == 0:
-                            email_input = page.locator("input").first
-
-                        email_input.wait_for(state="visible", timeout=10000)
-                        email_input.click()
-                        time.sleep(0.5)
-                        
-                        # Masukkan email lengkap secara instan dan pasti (mencegah ter-trigger sebelum selesai)
+                    email_input.wait_for(state="visible", timeout=10000)
+                    email_input.click()
+                    time.sleep(0.5)
+                    
+                    # Masukkan email lengkap secara instan dan pasti
+                    email_input.fill(current_email)
+                    time.sleep(0.5)
+                    
+                    if email_input.input_value() != current_email:
+                        email_input.fill("")
                         email_input.fill(current_email)
                         time.sleep(0.5)
                         
-                        # Verifikasi isi input sudah lengkap sesuai target email
-                        if email_input.input_value() != current_email:
-                            email_input.fill("")
-                            email_input.fill(current_email)
-                            time.sleep(0.5)
-                            
-                        print(f"   📧 Email berhasil diinputkan: {email_input.input_value()}")
-                        time.sleep(1)
+                    print(f"   📧 Email berhasil diinputkan: {email_input.input_value()}")
+                    time.sleep(1)
 
-                        # Cek apakah akun ini memiliki password
-                        portal_password = target.get('password', '').strip()
-                        login_with_password = bool(portal_password)
+                    portal_password = target.get('password', '').strip()
+                    login_with_password = bool(portal_password)
 
-                        # Klik tombol Lanjut / Submit form email
-                        submit_btn = page.locator("button:has-text('Lanjut'), button:has-text('Next'), button:has-text('Masuk'), button[type='submit']").first
-                        if submit_btn.count() > 0:
+                    submit_btn = page.locator("button:has-text('Lanjut'), button:has-text('Next'), button:has-text('Masuk'), button[type='submit']").first
+                    if submit_btn.count() > 0:
+                        try:
+                            page.wait_for_function("btn => !btn.disabled", submit_btn.element_handle(), timeout=3000)
+                        except Exception:
+                            pass
+                        print(f"   👉 Mengklik tombol: '{submit_btn.inner_text().strip()}'")
+                        submit_btn.click()
+                        time.sleep(2)
+
+                    is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
+                    if is_blocked:
+                        print(f"\n   🚫 [TERBLOKIR / LIMIT] Email '{current_email}' terdeteksi dibatasi/diblokir: '{block_msg}'")
+                        banned_emails.add(current_email)
+                        portal_encountered_ban = True
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+                        continue
+
+                    is_vb = (
+                        str(target.get('source_type', '')).upper() == 'VB' or 
+                        str(target.get('owner', '')).upper() == 'VB' or 
+                        str(source_type).lower() == 'vb'
+                    )
+
+                    if login_with_password:
+                        print(f"   🔑 [Password Login] Menggunakan kata sandi untuk {current_email}...")
+                        
+                        pass_input = page.locator("input[type='password'], input[name='password']").first
+                        if pass_input.count() == 0:
+                            pass_option_btn = page.locator("button:has-text('Masuk dengan kata sandi'), button:has-text('Gunakan kata sandi'), button:has-text('Masuk dengan Password')").first
+                            if pass_option_btn.count() > 0 and pass_option_btn.is_visible():
+                                pass_option_btn.click()
+                                time.sleep(1)
+                            pass_input = page.locator("input[type='password'], input[name='password']").first
+
+                        if pass_input.count() > 0:
                             try:
-                                page.wait_for_function("btn => !btn.disabled", submit_btn.element_handle(), timeout=3000)
+                                pass_input.wait_for(state="visible", timeout=5000)
                             except Exception:
                                 pass
-                            print(f"   👉 Mengklik tombol: '{submit_btn.inner_text().strip()}'")
-                            submit_btn.click()
-                            time.sleep(2)
+                            pass_input.fill(portal_password)
+                            time.sleep(0.5)
+                            print("   ✅ Kata sandi berhasil dimasukkan.")
 
-                        # Deteksi langsung apakah ada pesan blokir / rate limit setelah submit email
-                        is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
-                        if is_blocked:
-                            print(f"\n   🚫 [TERBLOKIR / LIMIT] Email '{current_email}' terdeteksi dibatasi/diblokir: '{block_msg}'")
-                            banned_emails.add(current_email)
-                            portal_encountered_ban = True
+                            masuk_btn = page.locator("button:has-text('Masuk'), button:has-text('Log in'), button:has-text('Login'), button[type='submit']").first
+                            if masuk_btn.count() > 0:
+                                print(f"   👉 Mengklik tombol submit: '{masuk_btn.inner_text().strip()}'")
+                                masuk_btn.click()
+                                time.sleep(2)
+
+                            for _ in range(15):
+                                # Cek keberadaan token di cookies
+                                found_token = None
+                                cookies_collected = context.cookies()
+                                for cookie in cookies_collected:
+                                    if cookie.get('name') == 'access_token' and cookie.get('value'):
+                                        found_token = cookie['value']
+                                        break
+
+                                # Cek localStorage jika belum ada di cookies
+                                if not found_token:
+                                    try:
+                                        found_token = page.evaluate("() => localStorage.getItem('access_token') || sessionStorage.getItem('access_token') || ''")
+                                    except Exception:
+                                        pass
+
+                                current_url = page.url
+                                is_success_url = any(u in current_url for u in ["/dashboard", "/home", "/outlets", "/portal", "/merchants"]) or (
+                                    "auth/login" not in current_url and "portal.gofoodmerchant.co.id" in current_url and current_url.strip("/") != "https://portal.gofoodmerchant.co.id/auth/login/email"
+                                )
+
+                                if found_token or is_success_url:
+                                    print(f"\n🎉 LOGIN SUKSES untuk {portal_name_str} ({current_email})!")
+                                    access_token = found_token or ""
+                                    if not access_token:
+                                        for cookie in context.cookies():
+                                            if cookie.get('name') == 'access_token' and cookie.get('value'):
+                                                access_token = cookie['value']
+                                                break
+                                    if not access_token:
+                                        try:
+                                            access_token = page.evaluate("() => localStorage.getItem('access_token') || sessionStorage.getItem('access_token') || ''")
+                                        except Exception:
+                                            pass
+                                    if not access_token:
+                                        try:
+                                            page.goto("https://portal.gofoodmerchant.co.id/dashboard", wait_until="domcontentloaded")
+                                            time.sleep(2)
+                                            for cookie in context.cookies():
+                                                if cookie.get('name') == 'access_token' and cookie.get('value'):
+                                                    access_token = cookie['value']
+                                                    break
+                                        except Exception:
+                                            pass
+
+                                    save_gofood_session(current_email, context.cookies(), access_token)
+                                    session_loaded_successfully = True
+                                    logged_in_email = current_email
+                                    break
+
+                                # Deteksi error di layar jika password salah
+                                is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
+                                if is_blocked:
+                                    print(f"   🚫 [LOGIN GAGAL] Pesan di layar: '{block_msg}'")
+                                    break
+
+                                time.sleep(1)
+
+                    if not session_loaded_successfully:
+                        # Akun VB tidak memerlukan dan tidak menggunakan OTP
+                        if is_vb:
+                            print(f"   ⚠️ [VB] Login kata sandi untuk '{current_email}' belum berhasil / sesi tidak terdeteksi. VB tidak memerlukan OTP.")
                             try:
                                 page.close()
                             except Exception:
                                 pass
                             continue
 
-                        if login_with_password:
-                            print(f"   🔑 [Password Login] Menggunakan kata sandi untuk {current_email}...")
-                            
-                            # Cek tombol opsi masuk dengan kata sandi jika belum muncul input password
-                            pass_option_btn = page.locator("button:has-text('kata sandi'), button:has-text('password'), :text('Masuk dengan kata sandi'), :text('Gunakan kata sandi')").first
-                            if pass_option_btn.count() > 0:
-                                pass_option_btn.click()
-                                time.sleep(1.5)
-
-                            pass_input = page.locator("input[type='password'], input[name='password']").first
-                            if pass_input.count() > 0:
-                                pass_input.wait_for(state="visible", timeout=5000)
-                                pass_input.fill(portal_password)
-                                time.sleep(1)
-                                print("   ✅ Kata sandi berhasil dimasukkan.")
-
-                                masuk_btn = page.locator("button:has-text('Masuk'), button:has-text('Log in'), button:has-text('Login'), button[type='submit']").first
-                                if masuk_btn.count() > 0:
-                                    print(f"   👉 Mengklik tombol submit: '{masuk_btn.inner_text().strip()}'")
-                                    masuk_btn.click()
-                                    time.sleep(3)
-
-                                # Cek apakah login sukses
-                                for _ in range(15):
-                                    current_url = page.url
-                                    if "/dashboard" in current_url or "/home" in current_url:
-                                        print(f"\n🎉 LOGIN SUKSES untuk {portal_name_str} ({current_email})!")
-                                        cookies = context.cookies()
-                                        for cookie in cookies:
-                                            if cookie['name'] == 'access_token':
-                                                access_token = cookie['value']
-                                                break
-                                                
-                                        save_gofood_session(current_email, cookies, access_token)
-                                        session_loaded_successfully = True
-                                        logged_in_email = current_email
-                                        break
-                                    time.sleep(1)
-
-                        # Jika bukan password login atau password login gagal, fallback ke flow OTP
-                        if not session_loaded_successfully:
-                            # Cek tombol opsi masuk dengan email/OTP jika ada
-                            otp_option_btn = page.locator("button:has-text('email'), button:has-text('OTP'), :text('Kirim kode via email'), :text('Kirim OTP')").first
-                            if otp_option_btn.count() > 0:
-                                otp_option_btn.click()
-                                time.sleep(1.5)
-                                is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
-                                if is_blocked:
-                                    print(f"\n   🚫 [TERBLOKIR / LIMIT] Permintaan OTP untuk '{current_email}' dibatasi: '{block_msg}'")
-                                    banned_emails.add(current_email)
-                                    portal_encountered_ban = True
-                                    try:
-                                        page.close()
-                                    except Exception:
-                                        pass
-                                    continue
-
-                            print("   ⏳ Menunggu OTP masuk ke Gmail...")
-                            otp_code = tunggu_otp_terbaru(OTP_ENDPOINT_URL, action="getOtpEmail", label_email=GMAIL_OTP_LABEL, timeout_detik=90, page=page)
-
-                            if otp_code:
-                                print(f"   🔑 Memasukkan kode OTP: {otp_code}")
-                                isi_kode_otp(page, otp_code)
-
-                                time.sleep(2)
-                                # Cek apakah sudah masuk ke dashboard atau token sudah tersedia
-                                for attempt in range(20):
-                                    cookies = context.cookies()
-                                    found_token = None
-                                    for cookie in cookies:
-                                        if cookie.get('name') == 'access_token' and cookie.get('value'):
-                                            found_token = cookie['value']
-                                            break
-                                            
-                                    current_url = page.url
-                                    if found_token or "/dashboard" in current_url or "/home" in current_url:
-                                        print(f"\n🎉 LOGIN SUKSES untuk {portal_name_str} ({current_email})!")
-                                        access_token = found_token or ""
-                                        if not access_token:
-                                            try:
-                                                access_token = page.evaluate("() => localStorage.getItem('access_token') || sessionStorage.getItem('access_token') || ''")
-                                            except Exception:
-                                                pass
-                                                
-                                        save_gofood_session(current_email, cookies, access_token)
-                                        session_loaded_successfully = True
-                                        logged_in_email = current_email
-                                        break
-                                        
-                                    # Jika masih tertahan di halaman OTP, periksa pesan error atau picu submit ulang
-                                    if attempt in (3, 6, 10):
-                                        is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
-                                        if is_blocked:
-                                            print(f"   🚫 [TERBLOKIR / OTP SALAH] Pesan di layar: '{block_msg}'")
-                                            break
-                                        trigger_submit_otp(page)
-                                        
-                                    time.sleep(1)
-                            else:
-                                is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
-                                if is_blocked:
-                                    print(f"   🚫 [TERBLOKIR / LIMIT] Email '{current_email}' terblokir: '{block_msg}'")
-                                else:
-                                    print(f"   ❌ Gagal mendapatkan OTP untuk {current_email}.")
+                        otp_option_btn = page.locator("button:has-text('email'), button:has-text('OTP'), :text('Kirim kode via email'), :text('Kirim OTP')").first
+                        if otp_option_btn.count() > 0:
+                            otp_option_btn.click()
+                            time.sleep(1.5)
+                            is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
+                            if is_blocked:
+                                print(f"\n   🚫 [TERBLOKIR / LIMIT] Permintaan OTP untuk '{current_email}' dibatasi: '{block_msg}'")
                                 banned_emails.add(current_email)
                                 portal_encountered_ban = True
+                                try:
+                                    page.close()
+                                except Exception:
+                                    pass
+                                continue
 
-                        if session_loaded_successfully:
-                            break
-                    except Exception as e:
-                        print(f"   ⚠️ Terjadi kesalahan saat proses login {current_email}: {e}")
+                        print("   ⏳ Menunggu OTP masuk ke Gmail...")
+                        otp_code = tunggu_otp_terbaru(OTP_ENDPOINT_URL, action="getOtpEmail", label_email=GMAIL_OTP_LABEL, timeout_detik=90, page=page)
+
+                        if otp_code:
+                            print(f"   🔑 Memasukkan kode OTP: {otp_code}")
+                            isi_kode_otp(page, otp_code)
+
+                            time.sleep(2)
+                            for attempt in range(20):
+                                cookies_collected = context.cookies()
+                                found_token = None
+                                for cookie in cookies_collected:
+                                    if cookie.get('name') == 'access_token' and cookie.get('value'):
+                                        found_token = cookie['value']
+                                        break
+                                        
+                                current_url = page.url
+                                if found_token or "/dashboard" in current_url or "/home" in current_url:
+                                    print(f"\n🎉 LOGIN SUKSES untuk {portal_name_str} ({current_email})!")
+                                    access_token = found_token or ""
+                                    if not access_token:
+                                        try:
+                                            access_token = page.evaluate("() => localStorage.getItem('access_token') || sessionStorage.getItem('access_token') || ''")
+                                        except Exception:
+                                            pass
+                                            
+                                    save_gofood_session(current_email, cookies_collected, access_token)
+                                    session_loaded_successfully = True
+                                    logged_in_email = current_email
+                                    break
+                                    
+                                if attempt in (3, 6, 10):
+                                    is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
+                                    if is_blocked:
+                                        print(f"   🚫 [TERBLOKIR / OTP SALAH] Pesan di layar: '{block_msg}'")
+                                        break
+                                    trigger_submit_otp(page)
+                                    
+                                time.sleep(1)
+                        else:
+                            is_blocked, block_msg = deteksi_pesan_blokir_atau_error(page)
+                            if is_blocked:
+                                print(f"   🚫 [TERBLOKIR / LIMIT] Email '{current_email}' terblokir: '{block_msg}'")
+                            else:
+                                print(f"   ❌ Gagal mendapatkan OTP untuk {current_email}.")
+                            banned_emails.add(current_email)
+                            portal_encountered_ban = True
+
+                    if session_loaded_successfully:
+                        break
+                except Exception as e:
+                    print(f"   ⚠️ Terjadi kesalahan saat proses login {current_email}: {e}")
 
             if session_loaded_successfully and access_token:
                 completed_portals.add(portal_name_str)
                 
-                # Scrape outlet data menggunakan GoBiz API Search
-                if not access_token.startswith("Bearer "):
-                    token_header = "Bearer " + access_token
-                else:
-                    token_header = access_token
-                    
-                payload_str = json.dumps({
-                    "from": 0,
-                    "size": 1000
-                })
+                # Ekstraksi cepat menggunakan curl_cffi dengan Chrome TLS impersonation
+                print("   ⚡ [FAST EXTRACTION] Menarik data outlet dari GoBiz API via curl_cffi...")
+                ok, status, hits, err = fetch_gobiz_merchants_fast(access_token, cookies=cookies_collected)
                 
-                print("   [*] Mengambil data outlet dari GoBiz API...")
-                try:
-                    if page.is_closed():
-                        page = context.new_page()
-                        page.goto("https://portal.gofoodmerchant.co.id/dashboard", wait_until="domcontentloaded")
-                        time.sleep(1)
+                if not ok or not hits:
+                    print(f"   ⚠️ curl_cffi gagal ({err}), mencoba fallback via browser evaluation...")
+                    try:
+                        if page.is_closed():
+                            page = context.new_page()
+                            page.goto("https://portal.gofoodmerchant.co.id/dashboard", wait_until="domcontentloaded")
+                            time.sleep(1)
 
-                    api_response = page.evaluate("""async ({token, payload}) => {
-                        try {
-                            const res = await fetch('https://api.gobiz.co.id/v1/merchants/search', {
-                                method: 'POST',
-                                headers: {
-                                    'Accept': 'application/json, text/plain, */*',
-                                    'Authentication-Type': 'go-id',
-                                    'Authorization': token,
-                                    'Content-Type': 'application/json'
-                                },
-                                body: payload
-                            });
-                            return await res.json();
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    }""", {"token": token_header, "payload": payload_str})
-                    
-                    outlets_data = []
-                    hits = []
-                    if api_response and 'hits' in api_response:
-                        hits = api_response['hits']
-                    elif api_response and 'data' in api_response:
-                        hits = api_response['data']
-                        
-                    if hits:
-                        print(f"   ✅ Berhasil menarik {len(hits)} data outlet!")
-                        for item in hits:
-                            src = item.get('_source', item)
-                            
-                            nama = src.get('outlet_name') or src.get('merchant_name', 'Unknown')
-                            store_id = src.get('id', '')
-                            
-                            status = "Unknown"
-                            apps = src.get('applications', {}) if isinstance(src.get('applications'), dict) else {}
-                            if 'goresto' in apps and isinstance(apps['goresto'], dict):
-                                status = apps['goresto'].get('status', status)
-                                
-                            alamat = src.get('outlet_address', '')
-                            
-                            # Ekstraksi Group ID
-                            tags = src.get('tags', {}) if isinstance(src.get('tags'), dict) else {}
-                            external_ids = src.get('external_ids', {}) if isinstance(src.get('external_ids'), dict) else {}
-                            group_id = ""
-                            for container in [tags, external_ids]:
-                                if isinstance(container, dict):
-                                    entity_list = container.get('entity', [])
-                                    brand_list = container.get('brand', [])
-                                    if isinstance(entity_list, list) and entity_list:
-                                        group_id = str(entity_list[0])
-                                        break
-                                    elif isinstance(brand_list, list) and brand_list:
-                                        group_id = str(brand_list[0])
-                                        break
-                            if not group_id:
-                                group_id = str(src.get('partner_id', '') or '')
-                            
-                            # Ekstraksi rest_id (GoFood Restaurant UUID / ID, BUKAN Store ID)
-                            rest_id = extract_gofood_rest_id(src, store_id)
-                            
-                            # Format link default ke surabaya sesuai spesifikasi
-                            gofood_link = f"http://gofood.co.id/surabaya/restaurant/{rest_id}" if rest_id else ""
-                            
-                            bank_no = ""
-                            bank_name = ""
-                            acc_name = ""
-                            if 'bank_account' in src and isinstance(src['bank_account'], dict):
-                                bank_no = str(src['bank_account'].get('account_no', '') or '')
-                                bank_name = src['bank_account'].get('bank_name', '')
-                                acc_name = src['bank_account'].get('account_name', '')
-                                    
-                            outlets_data.append({
-                                'Nama Pemilik': owner_name_str,
-                                'Nama Brand': target.get('brand', portal_name_str.split(' - ')[0] if ' - ' in portal_name_str else portal_name_str),
-                                'Aplikator': 'GoFood',
-                                'Nama Portal': portal_name_str,
-                                'Group ID': group_id,
-                                'Nama Listing': nama,
-                                'Link': gofood_link,
-                                'Store ID': store_id,
-                                'Status Listing': status,
-                                'Alamat': alamat,
-                                'Nama Bank': bank_name,
-                                'Nama Pemilik Rekening': acc_name,
-                                'Nomor Rekening': str(bank_no) if bank_no else ""
-                            })
-                            
-                        # Simpan file portal individual ke CACHE_DIR sebagai JSON
-                        if outlets_data:
-                            safe_portal = re.sub(r'[^a-zA-Z0-9_.-]', '_', portal_name_str.strip())
-                            cache_json_file = CACHE_DIR / f"gofood_portal_{safe_portal}.json"
-                            cache_payload = {
-                                'portal': portal_name_str,
-                                'brand': target.get('brand', portal_name_str.split(' - ')[0] if ' - ' in portal_name_str else portal_name_str),
-                                'owner': owner_name_str,
-                                'source_type': source_type.upper(),
-                                'email': logged_in_email or target.get('email', ''),
-                                'timestamp': datetime.datetime.now().isoformat(),
-                                'outlets': outlets_data
+                        token_h = f"Bearer {access_token}" if not access_token.startswith("Bearer ") else access_token
+                        payload_str = json.dumps({"from": 0, "size": 1000})
+                        api_response = page.evaluate("""async ({token, payload}) => {
+                            try {
+                                const res = await fetch('https://api.gobiz.co.id/v1/merchants/search', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Accept': 'application/json, text/plain, */*',
+                                        'Authentication-Type': 'go-id',
+                                        'Authorization': token,
+                                        'Content-Type': 'application/json'
+                                    },
+                                    body: payload
+                                });
+                                return await res.json();
+                            } catch (e) {
+                                return { error: e.message };
                             }
-                            try:
-                                with open(cache_json_file, 'w', encoding='utf-8') as jf:
-                                    json.dump(cache_payload, jf, indent=2, ensure_ascii=False)
-                                print(f"   💾 Cache portal disimpan di cache/: {cache_json_file.name} ({len(outlets_data)} outlet)")
-                            except Exception as e:
-                                print(f"   ⚠️ Gagal menyimpan cache JSON: {e}")
-                            
-                            # Kumpulkan ke koleksi Owner
-                            if owner_name_str not in owner_outlets_collected:
-                                owner_outlets_collected[owner_name_str] = []
-                            owner_outlets_collected[owner_name_str].extend(outlets_data)
-                    else:
-                        print(f"   ⚠️ API Response tidak mengembalikan data outlet: {api_response}")
-                except Exception as e:
-                    print(f"   ⚠️ Terjadi kesalahan saat menarik data: {e}")
+                        }""", {"token": token_h, "payload": payload_str})
+                        
+                        if api_response and 'hits' in api_response:
+                            hits = api_response['hits']
+                        elif api_response and 'data' in api_response:
+                            hits = api_response['data']
+                    except Exception as e:
+                        print(f"   ⚠️ Fallback browser juga mengalami error: {e}")
+                        
+                if hits:
+                    print(f"   ✅ Berhasil menarik {len(hits)} data outlet!")
+                    brand_str = target.get('brand', portal_name_str.split(' - ')[0] if ' - ' in portal_name_str else portal_name_str)
+                    outlets_data = transform_gobiz_hits(hits, owner_name_str, portal_name_str, brand_str)
+                    
+                    if outlets_data:
+                        safe_cache_name = get_safe_cache_filename(portal_name_str)
+                        cache_json_file = CACHE_DIR / safe_cache_name
+                        cache_payload = {
+                            'portal': portal_name_str,
+                            'brand': brand_str,
+                            'owner': owner_name_str,
+                            'source_type': source_type.upper(),
+                            'email': logged_in_email or target.get('email', ''),
+                            'timestamp': datetime.datetime.now().isoformat(),
+                            'outlets': outlets_data
+                        }
+                        try:
+                            with open(cache_json_file, 'w', encoding='utf-8') as jf:
+                                json.dump(cache_payload, jf, indent=2, ensure_ascii=False)
+                            print(f"   💾 Cache portal disimpan di cache/: {cache_json_file.name} ({len(outlets_data)} outlet)")
+                        except Exception as e:
+                            print(f"   ⚠️ Gagal menyimpan cache JSON: {e}")
+                        
+                        if owner_name_str not in owner_outlets_collected:
+                            owner_outlets_collected[owner_name_str] = []
+                        owner_outlets_collected[owner_name_str].extend(outlets_data)
+                else:
+                    print("   ⚠️ Tidak ada data outlet yang ditemukan.")
             else:
                 print(f"❌ Gagal login ke portal {portal_name_str}.")
-                # Tetap tambahkan ke postponed jika belum sukses
                 if target not in postponed_portals:
                     postponed_portals.append(target)
 
@@ -1715,12 +1856,8 @@ def main():
                     if APP_SCRIPT_URL:
                         upload_to_drive(str(owner_file))
         
-    # Gabungkan ke master jika memilih semua (All)
-    if is_all_selected:
-        combine_master(source_type=source_type)
-    else:
-        print("\nℹ️ Selesai memproses portal yang dipilih. File per-owner tersimpan di folder 'output/'.")
-        print("💡 Gunakan opsi 'Generate Master dari Cache' (atau menu [m]) jika ingin memperbarui file Master gabungan.")
+    # Selalu perbarui file master dari cache yang terkumpul
+    combine_master(source_type=source_type)
 
 
 if __name__ == "__main__":

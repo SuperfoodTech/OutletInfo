@@ -7,31 +7,65 @@ import argparse
 import pandas as pd
 from playwright.async_api import async_playwright
 
+try:
+    from curl_cffi.requests import AsyncSession
+except ImportError:
+    pass
+
+import urllib.request
+import subprocess
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GrabMerchantScraper")
 
 auth_headers = {}
 
-import urllib.request
 import csv
 import sys
-
 import os
 import time
+import re
+import hashlib
+import datetime
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GRAB_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_DIR = os.path.join(GRAB_DIR, "cache")
+OUTPUT_DIR = os.path.join(GRAB_DIR, "output")
+MASTER_DIR = os.path.join(GRAB_DIR, "master")
+SESSIONS_DIR = os.path.join(GRAB_DIR, "sessions")
+
+os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(MASTER_DIR, exist_ok=True)
+os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 GOOGLE_SHEET_AGENCY_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?output=csv"
 GOOGLE_SHEET_VB_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRYSUnKOqk29LCktTxdb0wPLbWMbRaWRP3eC_UA4AwYod1FW6zDMhtLMC5ghIvot2B8upCDfBsn-TCP/pub?gid=978201567&single=true&output=csv"
-LOCAL_CRED_CSV = os.path.join(os.path.dirname(__file__), '..', 'A. Credential (Outlet & Access)  - Unique Portal Gr (1).csv')
+GOOGLE_SHEET_VERCEL_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTprbPPf_J5gAVL3PYeHbbdl5ZXQvb17HY2lJGPI2xg13Ly3AGT8eYHLYmU_m1NdtkBVg-qUGv1BoEE/pub?output=csv"
+LOCAL_CRED_CSV = os.path.join(BASE_DIR, 'A. Credential (Outlet & Access)  - Unique Portal Gr (1).csv')
+
+
+def get_safe_cache_filename(portal_name):
+    """Menghasilkan nama file cache yang aman dari batasan panjang sistem operasi (maks 255 karakter)."""
+    clean = re.sub(r'[^a-zA-Z0-9_.-]', '_', str(portal_name).strip())
+    if len(clean) > 80:
+        h = hashlib.md5(str(portal_name).encode('utf-8')).hexdigest()[:8]
+        clean = clean[:70].rstrip('_') + f"_{h}"
+    return f"grab_portal_{clean}.json"
 
 
 def get_credentials_from_sheet(source_type="agency", custom_url=None):
-    """Mengambil daftar kredensial portal Grab berdasarkan tipe sumber (Agency atau VB)."""
+    """Mengambil daftar kredensial portal Grab berdasarkan tipe sumber (Agency, VB, atau Vercel)."""
     data = []
     
+    st_lower = str(source_type).lower()
     target_url = custom_url
     if not target_url:
-        if source_type.lower() == "vb":
+        if st_lower == "vb":
             target_url = GOOGLE_SHEET_VB_URL or os.getenv("GRAB_VB_CSV_URL", "")
+        elif st_lower == "vercel":
+            target_url = GOOGLE_SHEET_VERCEL_URL
         else:
             target_url = GOOGLE_SHEET_AGENCY_URL
 
@@ -39,17 +73,27 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
     if target_url:
         try:
             logger.info(f"[*] Mengambil data portal Grab [{source_type.upper()}] langsung dari Google Sheet (Live URL)...")
-            req = urllib.request.Request(target_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=20) as response:
-                content = response.read().decode('utf-8')
-                reader = csv.reader(content.splitlines())
+            res = subprocess.run(['curl', '-s', '-L', target_url], capture_output=True, text=True, timeout=20)
+            if res.returncode == 0 and res.stdout.strip():
+                reader = csv.reader(res.stdout.splitlines())
                 data = list(reader)
-                logger.info(f"[✓] Berhasil memuat {len(data)} baris data [{source_type.upper()}] dari Google Sheet.")
+                logger.info(f"[✓] Berhasil memuat {len(data)} baris data [{source_type.upper()}] dari Google Sheet via curl.")
         except Exception as e:
-            logger.warning(f"⚠️ Gagal fetch live dari Google Sheet [{source_type.upper()}]: {e}.")
+            logger.warning(f"⚠️ Gagal fetch live via curl [{source_type.upper()}]: {e}.")
+
+        if not data:
+            try:
+                req = urllib.request.Request(target_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=20) as response:
+                    content = response.read().decode('utf-8')
+                    reader = csv.reader(content.splitlines())
+                    data = list(reader)
+                    logger.info(f"[✓] Berhasil memuat {len(data)} baris data [{source_type.upper()}] dari Google Sheet.")
+            except Exception as e:
+                logger.warning(f"⚠️ Gagal fetch live dari Google Sheet [{source_type.upper()}]: {e}.")
 
     # 2. Fallback ke file CSV lokal jika live fetch gagal (khusus Agency)
-    if not data and source_type.lower() == "agency" and os.path.exists(LOCAL_CRED_CSV):
+    if not data and st_lower == "agency" and os.path.exists(LOCAL_CRED_CSV):
         try:
             logger.info(f"[*] Membaca data portal dari fallback lokal: {os.path.basename(LOCAL_CRED_CSV)}")
             with open(LOCAL_CRED_CSV, "r", encoding="utf-8") as f:
@@ -67,30 +111,46 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
     col_app = -1
     col_owner = -1
     col_portal = -1
+    col_outlet = -1
     col_user = -1
     col_pass = -1
     col_notes = -1
 
-    if source_type.lower() == "agency":
+    if st_lower == "agency":
         col_app = 3
         col_owner = 0
         col_portal = 2
         col_user = 26
         col_pass = 28
     else:
+        # 1. Exact match pass
         for i, h in enumerate(header):
-            if any(k == h or k in h for k in ['portal', 'nama portal', 'brand', 'nama brand', 'outlet']):
-                col_portal = i
-            elif any(k == h or k in h for k in ['username', 'nama pengguna', 'user login', 'user']):
-                col_user = i
-            elif any(k == h or k in h for k in ['password', 'kata sandi', 'pass login', 'pass']):
-                col_pass = i
-            elif any(k == h or k in h for k in ['notes', 'catatan', 'keterangan']):
-                col_notes = i
-            elif any(k == h or k in h for k in ['owner', 'pemilik']):
-                col_owner = i
-            elif any(k == h or k in h for k in ['aplikasi', 'platform', 'app']):
+            if h in ['aplikasi', 'app', 'platform']:
                 col_app = i
+            elif h in ['owner', 'pemilik', 'nama pemilik']:
+                col_owner = i
+            elif h in ['nama portal', 'portal', 'nama akses']:
+                col_portal = i
+            elif h in ['nama outlet', 'outlet', 'nama brand', 'brand']:
+                col_outlet = i
+            elif h in ['username', 'nama pengguna', 'user login', 'user']:
+                col_user = i
+            elif h in ['password', 'kata sandi', 'pass login', 'pass']:
+                col_pass = i
+            elif h in ['notes', 'catatan', 'keterangan']:
+                col_notes = i
+
+        # 2. Substring fallback only for still unmapped columns
+        for i, h in enumerate(header):
+            if col_app == -1 and any(k in h for k in ['aplikasi', 'platform']): col_app = i
+            if col_owner == -1 and any(k in h for k in ['owner', 'pemilik']): col_owner = i
+            if col_portal == -1 and any(k in h for k in ['portal']): col_portal = i
+            if col_outlet == -1 and any(k in h for k in ['outlet']): col_outlet = i
+            if col_user == -1 and any(k in h for k in ['user']): col_user = i
+            if col_pass == -1 and any(k in h for k in ['pass']): col_pass = i
+
+        if col_portal == -1:
+            col_portal = col_outlet
 
     portals = []
     for row in data[1:]:
@@ -107,23 +167,31 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
             is_grab = "grab" in row[col_app].strip().lower()
 
         if is_grab and len(row) > max(col_user, col_pass):
-            owner = row[col_owner].strip() if col_owner != -1 and col_owner < len(row) else ("VB" if source_type.lower() == "vb" else "")
-            portal = row[col_portal].strip() if col_portal != -1 and col_portal < len(row) else ""
+            owner = row[col_owner].strip() if col_owner != -1 and col_owner < len(row) else ("VB" if st_lower == "vb" else "")
+            
+            portal = ""
+            if col_portal != -1 and col_portal < len(row) and row[col_portal].strip():
+                portal = row[col_portal].strip()
+            if not portal and col_outlet != -1 and col_outlet < len(row):
+                portal = row[col_outlet].strip()
+
             brand = portal.split(" - ")[0].strip() if " - " in portal else portal
             username = row[col_user].strip() if col_user != -1 and col_user < len(row) else ""
             password = row[col_pass].strip() if col_pass != -1 and col_pass < len(row) else ""
             
             if username and username != "-" and password and password != "-":
+                safe_cache_name = get_safe_cache_filename(portal)
                 safe_portal_name = "".join([c for c in portal if c.isalpha() or c.isdigit() or c == ' ']).rstrip()
-                hasil_custom_dir = os.path.join(os.path.dirname(__file__), "hasil_custom")
+                cache_file = os.path.join(CACHE_DIR, safe_cache_name)
                 portals.append({
-                    "owner": owner if owner else "VB",
+                    "owner": owner if owner else ("VB" if st_lower == "vb" else brand),
                     "brand": brand,
                     "name": portal,
                     "username": username,
                     "password": password,
                     "source_type": source_type.upper(),
-                    "output": os.path.join(hasil_custom_dir, f"{safe_portal_name}.xlsx")
+                    "cache_file": cache_file,
+                    "output": os.path.join(OUTPUT_DIR, f"{safe_portal_name}.xlsx")
                 })
 
     logger.info(f"[✓] Terdaftar {len(portals)} portal GrabFood valid [{source_type.upper()}] untuk diproses.")
@@ -137,7 +205,6 @@ def parse_selection(choice, max_val):
         
     parts = choice.split(',')
     for part in parts:
-        part = part.strip()
         if '-' in part:
             try:
                 start, end = map(int, part.split('-'))
@@ -199,7 +266,10 @@ async def perform_login(page, username, password):
                 logger.info(f"[✓] Berhasil masuk via tombol Continue untuk {username}!")
                 return True
 
-        await page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+        try:
+            await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=45000)
+        except Exception as e:
+            logger.warning(f"Navigasi login lambat ({e}), melanjutkan...")
         
         # Tambahan waktu tunggu untuk memastikan JavaScript selesai me-render form
         logger.info("Menunggu halaman login ter-load sepenuhnya...")
@@ -211,31 +281,58 @@ async def perform_login(page, username, password):
                 logger.info(f"[✓] Berhasil masuk via tombol Continue untuk {username}!")
                 return True
 
-        # ── Step 1: Pastikan tab Username aktif ────────────────────────
-        logger.info("Memastikan tab 'Username' aktif...")
-        username_tab = page.get_by_role("tab", name="Username")
-        if await username_tab.is_visible(timeout=5000):
-            await username_tab.click()
-            await asyncio.sleep(random.uniform(0.4, 0.8))
+        # Cek apakah layar password sudah langsung muncul (misal dari Saved Account / Welcome back)
+        password_input = page.locator('input[type="password"]').first
+        is_pass_visible = False
+        try:
+            is_pass_visible = await password_input.is_visible()
+        except Exception:
+            pass
 
-        # ── Step 2: Isi username ───────────────────────────────────────
-        logger.info(f"Mengetik username: {username}")
-        username_input = page.locator('input[type="text"]').first
-        await username_input.wait_for(state="visible", timeout=15000)
-        await asyncio.sleep(random.uniform(0.3, 0.7))
-        await human_type(username_input, username)
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        if is_pass_visible:
+            # Periksa apakah form password ini untuk username yang sedang dituju
+            try:
+                body_txt = (await page.inner_text("body")).lower()
+                if "enter password for" in body_txt and username.lower() not in body_txt:
+                    logger.info(f"Layar password untuk akun lain. Mengklik tombol kembali...")
+                    back_btn = page.locator('button:has(svg), button[aria-label*="back" i], [data-testid*="back" i]').first
+                    if await back_btn.is_visible():
+                        await back_btn.click()
+                        await page.wait_for_timeout(2000)
+                        is_pass_visible = False
+            except Exception:
+                pass
 
-        # ── Step 3: Klik Continue (pertama) ───────────────────────────
-        logger.info("Klik Continue (username)...")
-        continue_btn = page.get_by_role("button", name="Continue")
-        await continue_btn.wait_for(state="visible", timeout=10000)
-        await asyncio.sleep(random.uniform(0.3, 0.6))
-        await continue_btn.click()
+        if not is_pass_visible:
+            # ── Step 1: Pastikan tab Username aktif ────────────────────────
+            logger.info("Memastikan tab 'Username' aktif...")
+            username_tab = page.get_by_role("tab", name="Username")
+            try:
+                if await username_tab.is_visible(timeout=3000):
+                    await username_tab.click()
+                    await asyncio.sleep(random.uniform(0.4, 0.8))
+            except Exception:
+                pass
+
+            # Cek sekali lagi apakah password_input muncul sebelum mengetik username
+            if not await password_input.is_visible():
+                # ── Step 2: Isi username ───────────────────────────────────────
+                logger.info(f"Mengetik username: {username}")
+                username_input = page.locator('input[type="text"], input[name="username"], input[name="email"]').first
+                await username_input.wait_for(state="visible", timeout=15000)
+                await asyncio.sleep(random.uniform(0.3, 0.7))
+                await human_type(username_input, username)
+                await asyncio.sleep(random.uniform(0.5, 1.0))
+
+                # ── Step 3: Klik Continue (pertama) ───────────────────────────
+                logger.info("Klik Continue (username)...")
+                continue_btn = page.get_by_role("button", name="Continue")
+                await continue_btn.wait_for(state="visible", timeout=10000)
+                await asyncio.sleep(random.uniform(0.3, 0.6))
+                await continue_btn.click()
 
         # ── Step 4: Tunggu form password muncul ───────────────────────
         logger.info("Menunggu form password...")
-        password_input = page.locator('input[type="password"]')
         await password_input.wait_for(state="visible", timeout=15000)
         await asyncio.sleep(random.uniform(0.4, 0.9))
 
@@ -251,11 +348,18 @@ async def perform_login(page, username, password):
         await asyncio.sleep(random.uniform(0.2, 0.5))
         await continue_btn2.click()
 
-        # ── Step 7: Tunggu redirect ke dashboard ─────────────────────
+        # ── Step 7: Tunggu redirect ke dashboard / keluar dari login ─────────────────────
         logger.info("Menunggu redirect ke dashboard...")
-        await page.wait_for_url(f"{BASE_URL}/**", timeout=45000)
-        logger.info(f"[✓] Login berhasil untuk {username} → {page.url}")
-        return True
+        for _ in range(30):
+            await page.wait_for_timeout(1000)
+            cur = page.url.lower()
+            if "login" not in cur and "saved-accounts" not in cur and "merchant.grab.com" in cur:
+                logger.info(f"[✓] Login berhasil untuk {username} → {page.url}")
+                return True
+
+        if "login" not in page.url.lower() and "saved-accounts" not in page.url.lower():
+            logger.info(f"[✓] Login berhasil untuk {username} → {page.url}")
+            return True
 
     except Exception as e:
         logger.error(f"[✗] Login gagal untuk {username}: {e}")
@@ -327,8 +431,8 @@ async def fetch_group_details(page, idmg):
             }
         }''', url)
         if res and isinstance(res, dict):
-            bank = res.get("bank_details", {})
-            if bank.get("bank_name"):
+            bank = res.get("bank_details") or {}
+            if isinstance(bank, dict) and bank.get("bank_name"):
                 logger.info(f"🏦 Berhasil mendapatkan data Bank Grab: {bank.get('bank_name')} a/n {bank.get('account_name')} ({bank.get('account_number')})")
             return res
     except Exception as e:
@@ -415,7 +519,189 @@ async def fetch_merchant_list(page):
 
 
 
+
+async def fetch_merchant_list_fast(headers, cookies_dict, cred, max_retries=3):
+    """Fast path using curl_cffi."""
+    try:
+        from curl_cffi.requests import AsyncSession
+    except ImportError:
+        logger.warning("curl_cffi not installed, skipping fast path.")
+        return None
+
+    # We need to construct a proper headers dict that might have been missing.
+    # We will use cookies_dict to pass cookies directly.
+    async with AsyncSession(impersonate="chrome120", cookies=cookies_dict) as s:
+        url_idmg = f"{BASE_URL}/troy/user-profile/v1/merchant-selector"
+        res_idmg = await s.get(url_idmg, headers=headers)
+        if res_idmg.status_code == 401:
+            return "401"
+        if not res_idmg.ok:
+            logger.warning(f"Fast path IDMG failed: {res_idmg.status_code}")
+            return None
+            
+        import re
+        match = re.search(r'(IDMG\d+)', res_idmg.text)
+        if not match:
+            return None
+        idmg = match.group(1)
+        
+        url_group = f"https://merchant.grab.com/troy/v1/merchant?merchant_group_id={idmg}&isBalanceNeeded=false&currency=IDR"
+        h2 = headers.copy()
+        h2['accept'] = 'application/json, text/plain, */*'
+        h2['requestsource'] = 'troyPortal'
+        res_group = await s.get(url_group, headers=h2)
+        group_data = res_group.json().get("data", {}) if res_group.ok else {}
+        group_bank = (group_data.get("bank_details") or {}) if isinstance(group_data, dict) else {}
+        group_bank_name = group_bank.get("bank_name", "") if isinstance(group_bank, dict) else ""
+        group_acc_name = group_bank.get("account_name", "") if isinstance(group_bank, dict) else ""
+        group_acc_no = group_bank.get("account_number", "") if isinstance(group_bank, dict) else ""
+
+        stores = []
+        offset = 0
+        limit = 100
+        
+        while True:
+            api_url = f"https://api.grab.com/delvplatformapi/merchant/v1/merchant-group/store/search?offset={offset}&limit={limit}&search=&includeItemsWithoutPhotosCount=true&includeInactive=true&modelType=ALL&asc=true&cityIDs[]=ALL&includeMenuGroupV2ID=false"
+            page_retries = 3
+            fetched_stores = []
+            
+            for attempt in range(page_retries):
+                res_list = await s.get(api_url, headers=headers)
+                if not res_list.ok:
+                    import asyncio
+                    await asyncio.sleep(1.5)
+                    continue
+                data = res_list.json()
+                fetched_stores = data.get("stores") or data.get("data", {}).get("stores") or data.get("merchantDetails") or data.get("data", {}).get("merchantDetails") or data.get("catalogStores") or []
+                if not fetched_stores and isinstance(data, list):
+                    fetched_stores = data
+                elif not fetched_stores and isinstance(data, dict):
+                    for k, v in data.items():
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and ("merchantID" in v[0] or "merchantId" in v[0] or "id" in v[0]):
+                            fetched_stores = v
+                            break
+                break
+                
+            if not fetched_stores or not isinstance(fetched_stores, list):
+                break
+                
+            stores.extend(fetched_stores)
+            if len(fetched_stores) < limit:
+                break
+            offset += limit
+            import asyncio
+            await asyncio.sleep(1.5)
+
+        if not stores:
+            # Cari Entity ID GF jika stores kosong
+            mex_store_id = idmg
+            try:
+                up_res = await s.get(f"https://merchant.grab.com/user-profile/v2/details?merchant_group_id={idmg}&currency=IDR", headers=headers)
+                if up_res.ok:
+                    up_data = up_res.json()
+                    gf_id = up_data.get("user_profile", {}).get("grab_food_entity_id")
+                    if not gf_id:
+                        for lk in up_data.get("user_profile", {}).get("links", []):
+                            if lk.get("link_entity_business_line") == "GF":
+                                gf_id = lk.get("link_entity_id")
+                                break
+                    if gf_id:
+                        mex_store_id = gf_id
+            except Exception:
+                pass
+
+            addr = (group_data.get("address") or {}) if isinstance(group_data, dict) else {}
+            addr_str = addr.get("AddressLine1", "") if isinstance(addr, dict) else str(addr or "")
+            city = addr.get("City", "") if isinstance(addr, dict) else ""
+            if city and city not in addr_str:
+                addr_str = f"{addr_str}, {city}".strip(", ")
+            store_name = group_data.get("name") or cred["name"]
+            stores = [{
+                "merchantID": mex_store_id,
+                "merchantName": store_name,
+                "address": addr_str,
+                "status": "ACTIVE",
+                "bankAccount": group_bank
+            }]
+            
+        all_results = []
+        for store in stores:
+            merchant_id = str(store.get("merchantID") or store.get("merchantId") or store.get("id") or "").strip()
+            store_name = store.get("name") or store.get("merchantName") or store.get("storeName") or merchant_id
+            status = store.get("status") or store.get("isActive") or ""
+            alamat = store.get("address") or store.get("merchantAddress") or ""
+            
+            nama_bank = ""
+            nama_pemilik = ""
+            no_rekening = ""
+            bank_obj = store.get("bankAccount") or store.get("bank_details")
+            if isinstance(bank_obj, dict):
+                nama_bank = bank_obj.get("bankName", "") or bank_obj.get("bank_name", "")
+                nama_pemilik = bank_obj.get("accountHolderName", "") or bank_obj.get("account_name", "")
+                no_rekening = bank_obj.get("accountNumber", "") or bank_obj.get("account_number", "")
+            else:
+                no_rekening = store.get("bankAccount") or store.get("bankAccountNumber") or store.get("accountNumber") or ""
+
+            if not nama_bank: nama_bank = group_bank_name
+            if not nama_pemilik: nama_pemilik = group_acc_name
+            if not no_rekening: no_rekening = group_acc_no
+
+            if not merchant_id:
+                continue
+
+            link_menu = f"https://merchant.grab.com/food/menu/{merchant_id}" if merchant_id else ""
+            all_results.append({
+                "Nama Pemilik": cred.get("owner", ""),
+                "Nama Brand": cred.get("brand", ""),
+                "Aplikator": "GrabFood",
+                "Nama Portal": cred["name"],
+                "Group ID": idmg,
+                "Nama Listing": store_name,
+                "Link": link_menu,
+                "Store ID": merchant_id,
+                "Status Listing": status,
+                "Alamat": alamat,
+                "Nama Bank": nama_bank,
+                "Nama Pemilik Rekening": nama_pemilik,
+                "Nomor Rekening": str(no_rekening) if isinstance(no_rekening, dict) else str(no_rekening),
+                "_owner": cred.get("owner", cred["name"])
+            })
+            
+        logger.info(f"⚡ [FAST PATH] Berhasil mengekstrak {len(all_results)} outlet via curl_cffi!")
+        return all_results
+
 async def run_scraper_for_credential(playwright, cred, force_fresh=False):
+    global auth_headers
+    headers_file = os.path.join(SESSIONS_DIR, f"grab_headers_{cred['name']}.json")
+    session_file = os.path.join(SESSIONS_DIR, f"grab_session_{cred['name']}.json")
+    
+    if not force_fresh and os.path.exists(session_file):
+        try:
+            import json
+            with open(session_file, "r") as f:
+                session_data = json.load(f)
+            cookies_dict = {c['name']: c['value'] for c in session_data.get('cookies', [])}
+            
+            cached_headers = {}
+            if os.path.exists(headers_file):
+                with open(headers_file, "r") as f:
+                    cached_headers = json.load(f)
+            
+            # Allow fast path if we have cookies, even if headers are empty, because Grab uses cookies!
+            if cookies_dict:
+                logger.info(f"⚡ [FAST PATH] Menguji token sesi Grab aktif untuk {cred['name']} via curl_cffi...")
+                fast_res = await fetch_merchant_list_fast(cached_headers, cookies_dict, cred)
+                if fast_res == "401":
+                    logger.warning(f"⚠️ [FAST PATH] Sesi {cred['name']} tidak valid (401). Melanjutkan ke browser auth...")
+                elif isinstance(fast_res, list) and len(fast_res) > 0:
+                    return fast_res
+        except Exception as e:
+            logger.debug(f"Fast path failed: {e}")
+            
+    return await run_scraper_for_credential_playwright(playwright, cred, force_fresh)
+
+async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=False):
+
     """Run scraper for a single credential set."""
     global auth_headers
     auth_headers = {}
@@ -441,8 +727,7 @@ async def run_scraper_for_credential(playwright, cred, force_fresh=False):
         ]
     )
 
-    os.makedirs(os.path.join(os.path.dirname(__file__), "sessions"), exist_ok=True)
-    session_file = os.path.join(os.path.dirname(__file__), "sessions", f"grab_session_{cred['name']}.json")
+    session_file = os.path.join(SESSIONS_DIR, f"grab_session_{cred['name']}.json")
 
     context_options = {
         "viewport": {"width": 1280, "height": 800},
@@ -467,8 +752,11 @@ async def run_scraper_for_credential(playwright, cred, force_fresh=False):
     try:
         # Cek apakah session masih valid dengan mencoba masuk ke halaman menu
         logger.info("Mengecek validitas session...")
-        await page.goto(f"{BASE_URL}/food/menu", wait_until="networkidle", timeout=60000)
-        await page.wait_for_timeout(3000)
+        try:
+            await page.goto(f"{BASE_URL}/food/menu", wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(2000)
+        except Exception as e:
+            logger.warning(f"Navigasi menu awal lambat ({e}), melanjutkan...")
 
         # Jika URL redirect ke halaman login atau logout, berarti session belum ada / sudah expired
         if "login" in page.url.lower() or "logout" in page.url.lower():
@@ -484,11 +772,17 @@ async def run_scraper_for_credential(playwright, cred, force_fresh=False):
 
             # Simpan state/session setelah berhasil login
             await context.storage_state(path=session_file)
+            headers_file = session_file.replace("grab_session_", "grab_headers_")
+            with open(headers_file, "w") as hf:
+                json.dump(auth_headers, hf)
             logger.info(f"Session baru berhasil disimpan ke {session_file}")
 
             # Pindah lagi ke halaman menu setelah login berhasil
-            await page.goto(f"{BASE_URL}/food/menu", wait_until="networkidle", timeout=60000)
-            await page.wait_for_timeout(3000)
+            try:
+                await page.goto(f"{BASE_URL}/food/menu", wait_until="domcontentloaded", timeout=45000)
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                logger.warning(f"Navigasi menu pasca login lambat ({e}), melanjutkan...")
         else:
             logger.info("[✓] Session masih valid! Lewati proses login.")
 
@@ -509,11 +803,17 @@ async def run_scraper_for_credential(playwright, cred, force_fresh=False):
 
             # Simpan state/session setelah berhasil login
             await context.storage_state(path=session_file)
+            headers_file = session_file.replace("grab_session_", "grab_headers_")
+            with open(headers_file, "w") as hf:
+                json.dump(auth_headers, hf)
             logger.info(f"Session baru berhasil disimpan ke {session_file}")
 
             # Pindah lagi ke halaman menu setelah login berhasil
-            await page.goto(f"{BASE_URL}/food/menu", wait_until="networkidle", timeout=60000)
-            await page.wait_for_timeout(3000)
+            try:
+                await page.goto(f"{BASE_URL}/food/menu", wait_until="domcontentloaded", timeout=45000)
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                logger.warning(f"Navigasi menu pasca login ulang lambat ({e}), melanjutkan...")
             
             # Coba ambil idmg lagi
             idmg, idmg_status = await fetch_idmg(page)
@@ -524,10 +824,10 @@ async def run_scraper_for_credential(playwright, cred, force_fresh=False):
 
         # Ambil data profil & rekening bank dari troy/v1/merchant
         group_data = await fetch_group_details(page, idmg)
-        group_bank = group_data.get("bank_details", {})
-        group_bank_name = group_bank.get("bank_name", "")
-        group_acc_name = group_bank.get("account_name", "")
-        group_acc_no = group_bank.get("account_number", "")
+        group_bank = (group_data.get("bank_details") or {}) if isinstance(group_data, dict) else {}
+        group_bank_name = group_bank.get("bank_name", "") if isinstance(group_bank, dict) else ""
+        group_acc_name = group_bank.get("account_name", "") if isinstance(group_bank, dict) else ""
+        group_acc_no = group_bank.get("account_number", "") if isinstance(group_bank, dict) else ""
 
         # Get list of stores dari API
         stores, total_expected = await fetch_merchant_list(page)
@@ -557,7 +857,7 @@ async def run_scraper_for_credential(playwright, cred, force_fresh=False):
 
         if not stores:
             logger.info(f"[*] Menangani mode Single-Store / Profil Langsung untuk {cred['name']}...")
-            addr = group_data.get("address", {})
+            addr = (group_data.get("address") or {}) if isinstance(group_data, dict) else {}
             addr_str = addr.get("AddressLine1", "") if isinstance(addr, dict) else str(addr or "")
             city = addr.get("City", "") if isinstance(addr, dict) else ""
             if city and city not in addr_str:
@@ -592,6 +892,10 @@ async def run_scraper_for_credential(playwright, cred, force_fresh=False):
             logger.info(f"[✓] Berhasil memuat data outlet Single-Store: '{store_name}' (ID: {merchant_id})")
 
         all_results = []
+        # Save headers as backup
+        headers_file = session_file.replace("grab_session_", "grab_headers_")
+        with open(headers_file, "w") as hf:
+            json.dump(auth_headers, hf)
         
         for store in stores:
             merchant_id = (
@@ -725,37 +1029,207 @@ def save_formatted_excel(df, file_path):
     wb.save(file_path)
 
 
+def save_portal_results(outlets_data, cred, source_type):
+    """Menyimpan data portal Grab ke cache JSON dan output Excel per-owner."""
+    if not outlets_data:
+        logger.warning(f"   ⚠️ Tidak ada data outlet untuk disimpan pada portal '{cred['name']}'.")
+        return None, None
+        
+    portal_name = cred["name"]
+    owner_name = cred.get("owner", cred.get("brand", portal_name))
+    safe_cache_name = get_safe_cache_filename(portal_name)
+    safe_owner = "".join(c for c in str(owner_name) if c.isalnum() or c in (' ', '_', '-')).strip()
+    if not safe_owner:
+        safe_owner = "Unknown"
+        
+    # 1. Simpan ke Cache JSON
+    cache_json_file = os.path.join(CACHE_DIR, safe_cache_name)
+    cache_payload = {
+        'portal': portal_name,
+        'brand': cred.get("brand", ""),
+        'owner': owner_name,
+        'source_type': str(source_type).upper(),
+        'username': cred.get("username", ""),
+        'timestamp': datetime.datetime.now().isoformat(),
+        'outlets': outlets_data
+    }
+    try:
+        with open(cache_json_file, 'w', encoding='utf-8') as jf:
+            json.dump(cache_payload, jf, indent=2, ensure_ascii=False)
+        logger.info(f"   💾 Cache portal disimpan di cache/: {os.path.basename(cache_json_file)}")
+    except Exception as e:
+        logger.warning(f"   ⚠️ Gagal menyimpan cache JSON: {e}")
+        
+    # 2. Simpan ke Output Excel per-owner
+    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
+    owner_df = pd.DataFrame(outlets_data)
+    if '_owner' in owner_df.columns:
+        owner_df = owner_df.drop(columns=['_owner'])
+    if 'Store ID' in owner_df.columns:
+        owner_df.drop_duplicates(subset=["Store ID"], keep="first", inplace=True)
+        
+    owner_file = os.path.join(OUTPUT_DIR, f"{timestamp_str} {safe_owner}.xlsx")
+    save_formatted_excel(owner_df, owner_file)
+    logger.info(f"   💾 File Owner '{owner_name}' tersimpan di output/: {os.path.basename(owner_file)} (Total: {len(owner_df)} outlet)")
+    return cache_json_file, owner_file
+
+
+def combine_master(source_type=None):
+    """Menggabungkan semua data cache JSON Grab ke Master (0master.xlsx / VB_master.xlsx) dan output per-owner."""
+    import glob
+    import shutil
+
+    logger.info("\n[*] Menggabungkan semua data cache JSON Grab ke Master...")
+    json_files = sorted(glob.glob(os.path.join(CACHE_DIR, "grab_portal_*.json")))
+
+    all_records = []
+    if json_files:
+        for f in json_files:
+            try:
+                with open(f, 'r', encoding='utf-8') as jf:
+                    cdata = json.load(jf)
+                    outlets = cdata.get('outlets', [])
+                    if isinstance(outlets, list):
+                        all_records.extend(outlets)
+            except Exception as e:
+                logger.warning(f"   ⚠️ Gagal membaca cache {os.path.basename(f)}: {e}")
+    else:
+        # Fallback baca dari file xlsx lama di hasil_custom jika ada
+        hasil_custom_dir = os.path.join(GRAB_DIR, "hasil_custom")
+        xlsx_files = sorted(glob.glob(os.path.join(hasil_custom_dir, "*.xlsx")))
+        xlsx_files = [f for f in xlsx_files if "master" not in os.path.basename(f).lower() and "duplikat" not in os.path.basename(f).lower()]
+        if not xlsx_files:
+            logger.warning("   ⚠️ Tidak ada file cache (grab_portal_*.json) di folder cache untuk digabung.")
+            return
+        for f in xlsx_files:
+            try:
+                df = pd.read_excel(f, sheet_name="Listing" if "Listing" in pd.ExcelFile(f).sheet_names else 0)
+                df.dropna(how="all", inplace=True)
+                if "Nama Listing" not in df.columns and "Nama Outlet" in df.columns:
+                    df.rename(columns={"Nama Outlet": "Nama Listing"}, inplace=True)
+                if "Status Listing" not in df.columns and "Status" in df.columns:
+                    df.rename(columns={"Status": "Status Listing"}, inplace=True)
+                all_records.extend(df.to_dict(orient='records'))
+            except Exception as e:
+                logger.warning(f"   ⚠️ Gagal membaca {os.path.basename(f)}: {e}")
+
+    if all_records:
+        master_df = pd.DataFrame(all_records)
+        if '_owner' in master_df.columns:
+            master_df = master_df.drop(columns=['_owner'])
+
+        # 1. Filter berdasarkan source_type TERLEBIH DAHULU agar data lintas tipe tidak saling memotong
+        if source_type:
+            st = str(source_type).strip().lower()
+            if 'Nama Pemilik' in master_df.columns:
+                if st == 'agency':
+                    master_df = master_df[master_df['Nama Pemilik'] != 'VB']
+                elif st == 'vb':
+                    master_df = master_df[master_df['Nama Pemilik'] == 'VB']
+                elif st == 'vercel':
+                    master_df = master_df[master_df['Nama Pemilik'] != 'VB']
+
+        # 2. Deduplikasi Store ID dalam lingkup sumber yang dipilih
+        if "Store ID" in master_df.columns:
+            master_df.drop_duplicates(subset=["Store ID"], keep="first", inplace=True)
+
+        if master_df.empty:
+            logger.warning("   ⚠️ Tidak ada baris data setelah pemfilteran source_type.")
+            return
+
+        st = str(source_type).strip().lower() if source_type else "agency"
+        if st == "vb":
+            tag = "VB"
+        elif st == "vercel":
+            tag = "Vercel"
+        else:
+            tag = "Agency"
+
+        timestamp_name = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
+        master_filename = f"{timestamp_name} {tag}_master.xlsx"
+        master_path = os.path.join(MASTER_DIR, master_filename)
+
+        # File versioning/backup jika file persis sama sudah ada
+        if os.path.exists(master_path):
+            version_dir = os.path.join(MASTER_DIR, "versions")
+            os.makedirs(version_dir, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = os.path.join(version_dir, f"{os.path.splitext(master_filename)[0]}_v{ts}.xlsx")
+            shutil.copy2(master_path, backup_path)
+            logger.info(f"   💾 Master lama di-backup ke: {os.path.basename(backup_path)}")
+
+        # Simpan master bertimestamp (YYYY-MM-DD HH_MM [Tipe]_master.xlsx)
+        save_formatted_excel(master_df, master_path)
+
+        # Simpan juga salinan statis [Tipe]_master.xlsx dan 0master.xlsx (khusus Agency) untuk kompatibilitas
+        static_master_path = os.path.join(MASTER_DIR, f"{tag}_master.xlsx")
+        save_formatted_excel(master_df, static_master_path)
+        if tag == "Agency":
+            save_formatted_excel(master_df, os.path.join(MASTER_DIR, "0master.xlsx"))
+
+        timestamp_name = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
+
+        # Simpan file per Nama Pemilik ke output/
+        if 'Nama Pemilik' in master_df.columns:
+            owners = master_df['Nama Pemilik'].dropna().unique()
+            for owner in owners:
+                if owner and str(owner).strip():
+                    owner_clean = "".join(c for c in str(owner) if c.isalnum() or c in " ._-").strip()
+                    owner_file = os.path.join(OUTPUT_DIR, f"{timestamp_name} {owner_clean}.xlsx")
+                    owner_df = master_df[master_df['Nama Pemilik'] == owner]
+                    save_formatted_excel(owner_df, owner_file)
+                    logger.info(f"   💾 File per-Owner tersimpan di output/: {os.path.basename(owner_file)}")
+
+        logger.info(f"\n[✓] Master Grab file berhasil dibuat:")
+        logger.info(f"    - {master_path}")
+        logger.info(f"    Total baris: {len(master_df)}")
+        logger.info(f"    Total kolom: {len(master_df.columns)} (Template YYYY-MM-DD HH_MM Nama Pemilik.xlsx)")
+
+
 async def main():
     import datetime
     
     parser = argparse.ArgumentParser(description="Grab Merchant Scraper")
-    parser.add_argument("--type", type=str, choices=["agency", "vb"], help="Pilih tipe sumber: 'agency' atau 'vb'")
+    parser.add_argument("--type", type=str, choices=["agency", "vb", "vercel"], help="Pilih tipe sumber: 'agency', 'vb', atau 'vercel'")
     parser.add_argument("--agency", action="store_true", help="Gunakan sumber kredensial Agency")
     parser.add_argument("--vb", action="store_true", help="Gunakan sumber kredensial VB (Virtual Brand)")
+    parser.add_argument("--vercel", action="store_true", help="Gunakan sumber kredensial Vercel Sheet")
     parser.add_argument("--vb-url", type=str, help="URL Google Sheet / CSV khusus untuk VB")
     parser.add_argument("--url", type=str, help="URL Google Sheet / CSV custom")
     parser.add_argument("--outlet", type=str, help="Specify the outlet name to run (e.g., F1)")
+    parser.add_argument("--outlets", type=str, help="Comma-separated list of outlet names")
+    parser.add_argument("--users", type=str, help="Comma-separated list of usernames to run")
     parser.add_argument("--all", action="store_true", help="Run for all portals without prompt")
     parser.add_argument("--fresh", action="store_true", help="Start fresh run and ignore previous progress checkpoint")
+    parser.add_argument("--combine", action="store_true", help="Gabungkan file cache JSON ke master & output tanpa scraping ulang")
     args = parser.parse_args()
 
     source_type = "agency"
     custom_url = args.url or args.vb_url
 
-    if args.vb or args.type == "vb":
+    if args.vercel or args.type == "vercel":
+        source_type = "vercel"
+    elif args.vb or args.type == "vb":
         source_type = "vb"
     elif args.agency or args.type == "agency":
         source_type = "agency"
-    elif not args.outlet and not args.all:
-        print("\n" + "=" * 54)
+
+    if args.combine:
+        combine_master(source_type=source_type)
+        return
+
+    if not args.outlet and not args.outlets and not args.users and not args.all:
         print("  PILIH SUMBER KREDENSIAL GRABFOOD")
         print("=" * 54)
         print("  [1] Agency (Master Agency Google Sheet)")
         print("  [2] VB     (Virtual Brand - Dokumen Lain)")
+        print("  [3] Vercel (Live CSV Vercel Sheet)")
         print("=" * 54)
-        pilihan = input("Pilih [1/2] (Default: 1 - Agency): ").strip()
-        if pilihan == "2" or pilihan.lower() == "vb":
+        pilihan = input("Pilih [1/2/3] (Default: 1 - Agency): ").strip().lower()
+        if pilihan in ("2", "vb"):
             source_type = "vb"
+        elif pilihan in ("3", "vercel"):
+            source_type = "vercel"
         else:
             source_type = "agency"
 
@@ -766,6 +1240,18 @@ async def main():
         target_credentials = [c for c in portals if c["name"] == args.outlet]
         if not target_credentials:
             logger.error(f"Outlet '{args.outlet}' not found in credentials.")
+            return
+    elif args.outlets:
+        outlet_names = [o.strip().lower() for o in args.outlets.split(",") if o.strip()]
+        target_credentials = [c for c in portals if c["name"].strip().lower() in outlet_names]
+        if not target_credentials:
+            logger.error(f"None of the outlets in '{args.outlets}' found in credentials.")
+            return
+    elif args.users:
+        user_list = [u.strip().strip(".").lower() for u in args.users.replace("\n", ",").split(",") if u.strip()]
+        target_credentials = [c for c in portals if c["username"].strip().strip(".").lower() in user_list]
+        if not target_credentials:
+            logger.error(f"None of the usernames in '{args.users}' found in credentials.")
             return
     elif args.all:
         target_credentials = portals
@@ -785,11 +1271,10 @@ async def main():
         logger.error("Tidak ada portal yang dipilih.")
         return
 
-    output_dir = os.path.join(os.path.dirname(__file__), "sessions")
-    os.makedirs(output_dir, exist_ok=True)
-    progress_file = os.path.join(output_dir, f".grab_progress_{source_type}.json")
-    if source_type == "agency" and not os.path.exists(progress_file) and os.path.exists(os.path.join(output_dir, ".grab_progress.json")):
-        progress_file = os.path.join(output_dir, ".grab_progress.json")
+    output_dir = OUTPUT_DIR
+    progress_file = os.path.join(SESSIONS_DIR, f".grab_progress_{source_type}.json")
+    if source_type == "agency" and not os.path.exists(progress_file) and os.path.exists(os.path.join(SESSIONS_DIR, ".grab_progress.json")):
+        progress_file = os.path.join(SESSIONS_DIR, ".grab_progress.json")
 
     # ── Checkpoint / Resume Management ──────────────────────────────
     completed_portal_names = set()
@@ -813,7 +1298,7 @@ async def main():
         except Exception as ex:
             logger.warning(f"Gagal membaca checkpoint progress: {ex}")
 
-    logger.info("Starting Grab Merchant Scraper")
+    # Jika user secara eksplisit menentukan outlet/users untuk di-repull, jangan lewati
     logger.info(f"Total portal yang ditargetkan: {len(target_credentials)}")
 
     async with async_playwright() as playwright:
@@ -823,7 +1308,7 @@ async def main():
                 continue
 
             logger.info(f"\n▶️ [{idx}/{len(target_credentials)}] Memproses portal: {cred['name']} (Owner: {cred.get('owner', '-')})...")
-            stores_res = await run_scraper_for_credential(playwright, cred)
+            stores_res = await run_scraper_for_credential(playwright, cred, force_fresh=args.fresh)
             
             retry_count = 0
             while not stores_res and retry_count < 2:
@@ -838,6 +1323,9 @@ async def main():
                     all_collected_stores.extend(valid_stores)
                     completed_portal_names.add(cred["name"])
                     
+                    # Simpan ke Cache JSON & Output Excel per-owner secara Real-Time
+                    save_portal_results(valid_stores, cred, source_type)
+
                     # Simpan checkpoint progress seketika (Real-Time Auto-Save)
                     try:
                         with open(progress_file, "w", encoding="utf-8") as f:
@@ -865,22 +1353,18 @@ async def main():
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
 
     # 1. Simpan per Owner (Nama Pemilik) sesuai template baru: YYYY-MM-DD HH_MM Nama Pemilik.xlsx
-    owners = df_all["_owner"].dropna().unique()
+    owners = df_all["_owner"].dropna().unique() if "_owner" in df_all.columns else []
     for owner in owners:
         df_owner = df_all[df_all["_owner"] == owner].drop(columns=["_owner"])
         safe_owner = "".join(c for c in str(owner) if c.isalnum() or c in (' ', '_', '-')).strip()
         if not safe_owner:
             safe_owner = "Unknown"
-        owner_file = os.path.join(output_dir, f"{timestamp} {safe_owner}.xlsx")
+        owner_file = os.path.join(OUTPUT_DIR, f"{timestamp} {safe_owner}.xlsx")
         save_formatted_excel(df_owner, owner_file)
-        logger.info(f"[✓] File Template Baru tersimpan: {owner_file} ({len(df_owner)} baris)")
+        logger.info(f"[✓] File Template Baru tersimpan di output/: {os.path.basename(owner_file)} ({len(df_owner)} baris)")
 
-    # 2. Simpan Master Gabungan jika lebih dari 1 owner atau opsi --all
-    if len(owners) > 1 or args.all:
-        master_df = df_all.drop(columns=["_owner"])
-        master_file = os.path.join(output_dir, f"{timestamp} Master.xlsx")
-        save_formatted_excel(master_df, master_file)
-        logger.info(f"[✓] File Master tersimpan: {master_file} ({len(master_df)} baris)")
+    # 2. Gabungkan seluruh cache ke Master di master/0master.xlsx (atau VB_master.xlsx)
+    combine_master(source_type=source_type)
 
     # Bersihkan checkpoint jika semua proses selesai sukses
     if os.path.exists(progress_file):
