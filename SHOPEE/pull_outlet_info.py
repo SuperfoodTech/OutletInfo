@@ -104,6 +104,47 @@ def is_excluded(name: str) -> bool:
     return any(kw in name_lower for kw in EXCLUDE_KEYWORDS)
 
 
+def get_owner_brand_mapping():
+    """Membangun pemetaan dari nama portal/merchant ke (Nama Pemilik, Nama Brand)."""
+    mapping = {}
+    base_proj = SCRIPT_DIR.parent
+    master_files = [
+        base_proj / "GOFOOD" / "master" / "0master.xlsx",
+        base_proj / "GRAB" / "master" / "0master.xlsx"
+    ]
+    for mf in master_files:
+        if mf.exists():
+            try:
+                import pandas as pd
+                df = pd.read_excel(mf, sheet_name="Listing")
+                for _, row in df.iterrows():
+                    p = str(row.get("Nama Portal") or "").strip().lower()
+                    b = str(row.get("Nama Brand") or "").strip()
+                    o = str(row.get("Nama Pemilik") or "").strip()
+                    if p and o:
+                        mapping[p] = (o, b or p)
+                    if b and o:
+                        mapping[b.lower()] = (o, b)
+            except Exception:
+                pass
+
+    # Fallback dari Google Sheet Agency jika master lokal kosong
+    if not mapping:
+        try:
+            import pandas as pd
+            agency_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?output=csv"
+            df = pd.read_csv(agency_url)
+            for _, row in df.iterrows():
+                o = str(row.get("Owner") or "").strip()
+                b = str(row.get("Brand") or "").strip()
+                if b and o:
+                    mapping[b.lower()] = (o, b)
+        except Exception:
+            pass
+
+    return mapping
+
+
 MERCHANT_INFO_MAP = {}
 
 def get_merchants_to_switch() -> list[dict]:
@@ -898,7 +939,19 @@ def run_pull(
                 "Alamat": "-",
             })
 
-    # Standardize records for export (Columns G-N) and deduplicate
+    # Load Owner & Brand mapping serta Bank details
+    owner_map = get_owner_brand_mapping()
+    bank_info = {}
+    if BANK_ACC_FILE.exists():
+        try:
+            bank_info = json.loads(BANK_ACC_FILE.read_text())
+        except Exception:
+            pass
+    bank_name = bank_info.get("BANK_NAME", "BCA")
+    bank_owner = bank_info.get("BANK_ACCOUNT_NAME", "JEFFRI ROHMANDO AULIA")
+    bank_no = bank_info.get("BANK_ACCOUNT") or bank_info.get("BANK_ACCOUNT_NO", "0644888882")
+
+    # Standardize records for export (Columns A-Q) and deduplicate
     standardized_results = []
     seen_entry_keys = set()
 
@@ -926,8 +979,30 @@ def run_pull(
             continue
         seen_entry_keys.add(entry_key)
 
+        # Cari mapping Nama Pemilik dan Nama Brand
+        m_lower = merchant_name.lower().strip()
+        matched_owner = r.get("Nama Pemilik")
+        matched_brand = r.get("Nama Brand")
+
+        if not matched_owner:
+            if m_lower in owner_map:
+                matched_owner, matched_brand = owner_map[m_lower]
+            else:
+                for k, (o, b) in owner_map.items():
+                    if k in m_lower or m_lower in k:
+                        matched_owner, matched_brand = o, b
+                        break
+        
+        # Fallback jika belum cocok
+        if not matched_owner:
+            matched_owner = "VB"
+        if not matched_brand:
+            matched_brand = merchant_name
+
         standardized_results.append({
-            "Aplikator": r.get("Aplikator") or "Shopeefood",
+            "Nama Pemilik": matched_owner,
+            "Nama Brand": matched_brand,
+            "Aplikator": "ShopeeFood",
             "Nama Portal": merchant_name,
             "Group ID": group_id,
             "Nama Listing": store_name,
@@ -935,10 +1010,13 @@ def run_pull(
             "Store ID": store_id,
             "Status Listing": status_val,
             "Alamat": r.get("Alamat") or "",
+            "Nama Bank": bank_name,
+            "Nama Pemilik Rekening": bank_owner,
+            "Nomor Rekening": bank_no,
         })
 
-    # Sort rows by Nama Portal and Nama Listing
-    standardized_results.sort(key=lambda x: (str(x.get("Nama Portal", "")), str(x.get("Nama Listing", ""))))
+    # Sort rows by Nama Pemilik, Nama Portal, dan Nama Listing
+    standardized_results.sort(key=lambda x: (str(x.get("Nama Pemilik", "")), str(x.get("Nama Portal", "")), str(x.get("Nama Listing", ""))))
 
     # Create output directory
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -950,62 +1028,78 @@ def run_pull(
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         excel_path = OUTPUT_DIR / f"Shopee_{timestamp}.xlsx"
 
-    # Use template workbook if available, otherwise build fresh
-    import openpyxl
-    if TEMPLATE_FILE.exists():
-        wb = openpyxl.load_workbook(TEMPLATE_FILE)
-        if "Listing" in wb.sheetnames:
-            ws = wb["Listing"]
-        else:
-            ws = wb.active
-        # Clear existing data rows starting from row 2
-        if ws.max_row > 1:
-            ws.delete_rows(2, ws.max_row)
-    else:
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Listing"
-        default_headers = [
-            "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
-            "Aplikator", "Nama Portal", "Group ID", "Nama Listing", "Link", "Store ID", "Status Listing", "Alamat",
-            "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
-            "Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi", "Nama Portal",
-            "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
-            "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
-            "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
-            "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
-            "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif"
-        ]
-        ws.append(default_headers)
+    default_headers = [
+        "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
+        "Aplikator", "Nama Portal", "Group ID", "Nama Listing", "Link", "Store ID", "Status Listing", "Alamat",
+        "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
+        "Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi", "Nama Portal.1",
+        "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
+        "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
+        "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
+        "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
+        "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif"
+    ]
 
-    font_header = Font(name="Arial", size=10, bold=True)
-    font_body = Font(name="Arial", size=10, bold=False)
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    font_header = Font(name="Calibri", size=11, bold=True)
+    font_body = Font(name="Calibri", size=11, bold=False)
     align_left = Alignment(horizontal="left", vertical="center")
 
-    # Format header row
-    for col in range(1, ws.max_column + 1):
-        cell = ws.cell(row=1, column=col)
-        cell.font = font_header
-        cell.alignment = align_left
-
-    # Populate rows with mapping to G-N ONLY (Columns 7 to 14)
-    for row_idx, r in enumerate(standardized_results, start=2):
-        ws.cell(row=row_idx, column=7, value=r.get("Aplikator", "Shopeefood"))            # G: Aplikator
-        ws.cell(row=row_idx, column=8, value=r.get("Nama Portal", ""))                   # H: Nama Portal
-        ws.cell(row=row_idx, column=9, value=r.get("Group ID", ""))                      # I: Group ID
-        ws.cell(row=row_idx, column=10, value=r.get("Nama Listing", ""))                 # J: Nama Listing
-        ws.cell(row=row_idx, column=11, value=r.get("Link", ""))                         # K: Link
-        ws.cell(row=row_idx, column=12, value=r.get("Store ID", ""))                     # L: Store ID
-        ws.cell(row=row_idx, column=13, value=r.get("Status Listing", ""))               # M: Status Listing
-        ws.cell(row=row_idx, column=14, value=r.get("Alamat", ""))                       # N: Alamat
-
-        # Format row styling
-        for col in range(1, ws.max_column + 1):
-            cell = ws.cell(row=row_idx, column=col)
-            cell.font = font_body
+    def populate_sheet(ws_target):
+        # Format header row
+        for c_idx, h in enumerate(default_headers, start=1):
+            cell = ws_target.cell(row=1, column=c_idx, value=h)
+            cell.font = font_header
             cell.alignment = align_left
 
+        # Populate rows with mapping to Kolom A, B, dan G sampai Q (13 kolom terisi)
+        for row_idx, r in enumerate(standardized_results, start=2):
+            ws_target.cell(row=row_idx, column=1, value=str(r.get("Nama Pemilik") or ""))      # A: Nama Pemilik
+            ws_target.cell(row=row_idx, column=2, value=str(r.get("Nama Brand") or ""))        # B: Nama Brand
+            ws_target.cell(row=row_idx, column=7, value=str(r.get("Aplikator") or "ShopeeFood")) # G: Aplikator
+            ws_target.cell(row=row_idx, column=8, value=str(r.get("Nama Portal") or ""))     # H: Nama Portal
+            ws_target.cell(row=row_idx, column=9, value=str(r.get("Group ID") or ""))        # I: Group ID
+            ws_target.cell(row=row_idx, column=10, value=str(r.get("Nama Listing") or ""))   # J: Nama Listing
+            ws_target.cell(row=row_idx, column=11, value=str(r.get("Link") or ""))           # K: Link
+            ws_target.cell(row=row_idx, column=12, value=str(r.get("Store ID") or ""))       # L: Store ID
+            ws_target.cell(row=row_idx, column=13, value=str(r.get("Status Listing") or "")) # M: Status Listing
+            ws_target.cell(row=row_idx, column=14, value=str(r.get("Alamat") or ""))         # N: Alamat
+            ws_target.cell(row=row_idx, column=15, value=str(r.get("Nama Bank") or ""))       # O: Nama Bank
+            ws_target.cell(row=row_idx, column=16, value=str(r.get("Nama Pemilik Rekening") or "")) # P: Nama Pemilik Rekening
+            c_rek = ws_target.cell(row=row_idx, column=17, value=str(r.get("Nomor Rekening") or "")) # Q: Nomor Rekening
+            c_rek.number_format = '@'
+
+            for col in range(1, 18):
+                cell = ws_target.cell(row=row_idx, column=col)
+                cell.font = font_body
+                cell.alignment = align_left
+
+        # Auto-adjust column widths
+        for col_idx in range(1, 18):
+            col_letter = get_column_letter(col_idx)
+            max_len = max((len(str(ws_target.cell(row=rw, column=col_idx).value or '')) for rw in range(1, len(standardized_results) + 2)), default=0)
+            ws_target.column_dimensions[col_letter].width = min(max(max_len + 4, 12), 60)
+
+    # Tab 1: Listing
+    ws1 = wb.active
+    ws1.title = "Listing"
+    populate_sheet(ws1)
+
+    # Tab 2: Listing 2 (100% Identik)
+    ws2 = wb.create_sheet(title="Listing 2")
+    populate_sheet(ws2)
+
     wb.save(excel_path)
+    # Simpan juga ke 0master.xlsx sebagai cache terpusat
+    master_static = OUTPUT_DIR / "0master.xlsx"
+    wb.save(master_static)
+
+    print(f"  ✓ Sheet 'Listing' & 'Listing 2': {len(standardized_results)} rows (2 Tab Identik)")
+    print(f"  ✓ Output: {excel_path}")
+    print(f"  ✓ Master Output: {master_static}")
     print(f"  ✓ Sheet 'Listing': {len(standardized_results)} rows")
     print(f"  ✓ Output: {excel_path}")
 

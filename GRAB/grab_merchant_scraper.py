@@ -1198,6 +1198,7 @@ async def main():
     parser.add_argument("--url", type=str, help="URL Google Sheet / CSV custom")
     parser.add_argument("--outlet", type=str, help="Specify the outlet name to run (e.g., F1)")
     parser.add_argument("--outlets", type=str, help="Comma-separated list of outlet names")
+    parser.add_argument("--owner", type=str, help="Filter nama owner tertentu untuk ditarik")
     parser.add_argument("--users", type=str, help="Comma-separated list of usernames to run")
     parser.add_argument("--all", action="store_true", help="Run for all portals without prompt")
     parser.add_argument("--fresh", action="store_true", help="Start fresh run and ignore previous progress checkpoint")
@@ -1218,7 +1219,7 @@ async def main():
         combine_master(source_type=source_type)
         return
 
-    if not args.outlet and not args.outlets and not args.users and not args.all:
+    if not args.outlet and not args.outlets and not args.owner and not args.users and not args.all:
         print("  PILIH SUMBER KREDENSIAL GRABFOOD")
         print("=" * 54)
         print("  [1] Agency (Master Agency Google Sheet)")
@@ -1236,7 +1237,11 @@ async def main():
     portals = get_credentials_from_sheet(source_type=source_type, custom_url=custom_url)
     target_credentials = []
 
-    if args.outlet:
+    if args.owner:
+        owner_clean = args.owner.strip().lower()
+        target_credentials = [c for c in portals if str(c.get("owner", "")).strip().lower() == owner_clean or owner_clean in str(c.get("owner", "")).strip().lower()]
+        logger.info(f"[*] Filter Owner '{args.owner}': Ditemukan {len(target_credentials)} akun portal GrabFood.")
+    elif args.outlet:
         target_credentials = [c for c in portals if c["name"] == args.outlet]
         if not target_credentials:
             logger.error(f"Outlet '{args.outlet}' not found in credentials.")
