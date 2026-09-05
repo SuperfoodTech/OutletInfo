@@ -535,10 +535,45 @@ def run_all():
     run_script(os.path.join(GOFOOD_DIR, "gofood_scraper.py"), cwd=GOFOOD_DIR)
 
     section("Combine Grab Excel")
-    run_script(os.path.join(GRAB_DIR, "combine_custom.py"), cwd=GRAB_DIR)
+    run_script(os.path.join(GRAB_DIR, "grab_merchant_scraper.py"), cwd=GRAB_DIR, extra_args=["--combine"])
 
     success("Semua scraper selesai dijalankan!")
     wait()
+
+
+def menu_export_drive():
+    header("Export & Upload Drive Per-Owner")
+    section("Opsi Penggabungan")
+    menu_item("1", "☁️", "Gabung & Upload ke Drive", "Gabungkan GoFood & Grab, lalu upload ke Drive")
+    menu_item("2", "💾", "Gabung Lokal Saja",         "Hanya simpan di output_owners/ (tanpa upload)")
+    menu_item("3", "👤", "Filter per Owner",          "Pilih satu owner spesifik")
+    menu_item("4", "📋", "Lihat Daftar Owner",        "Daftar owner & total outlet per platform")
+    menu_item("5", "🤖", "Jalankan Discord Bot",       "Aktifkan bot Discord (Slash command /generate)")
+    divider()
+    menu_item("b", "↩", "Kembali ke Menu Utama")
+    print()
+
+    choice = prompt("Pilih menu")
+    script = os.path.join(BASE_DIR, "export_and_upload_drive.py")
+    bot_script = os.path.join(BASE_DIR, "discord_bot.py")
+    if choice == "1":
+        run_script(script, cwd=BASE_DIR, extra_args=["--upload"])
+    elif choice == "2":
+        run_script(script, cwd=BASE_DIR, extra_args=["--local-only"])
+    elif choice == "3":
+        owner_name = prompt("Masukkan Nama Owner")
+        if owner_name:
+            ask_upload = prompt("Upload ke Drive juga? (y/N)")
+            args = ["--owner", owner_name]
+            if ask_upload.lower() == "y":
+                args.append("--upload")
+            else:
+                args.append("--local-only")
+            run_script(script, cwd=BASE_DIR, extra_args=args)
+    elif choice == "4":
+        run_script(script, cwd=BASE_DIR, extra_args=["--list-owners"])
+    elif choice == "5":
+        run_script(bot_script, cwd=BASE_DIR)
 
 
 def main():
@@ -551,6 +586,8 @@ def main():
         menu_item("3", "🔴", "GoFood",  "Scraper untuk GoFood/GoBiz")
         divider()
         menu_item("4", "🚀", "Jalankan Semua", "Grab + Shopee + GoFood sekaligus")
+        menu_item("5", "☁️", "Export & Upload Drive", "Gabungkan GoFood + Grab per-owner & upload")
+        menu_item("6", "🤖", "Discord Bot", "Jalankan Discord Bot interactive panel (/generate)")
         divider()
         menu_item("q", "✖", "Keluar")
         print()
@@ -565,6 +602,10 @@ def main():
             menu_gofood()
         elif choice == "4":
             run_all()
+        elif choice == "5":
+            menu_export_drive()
+        elif choice == "6":
+            run_script(os.path.join(BASE_DIR, "discord_bot.py"), cwd=BASE_DIR)
         elif choice.lower() in ("q", "exit", "quit", "0"):
             clear()
             print(c("\n  Sampai jumpa! 👋\n", CYAN, BOLD))
