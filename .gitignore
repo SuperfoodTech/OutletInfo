@@ -18,6 +18,7 @@ ENV/
 .aider*
 
 # Data output files
+output_owners/
 GRAB/hasil_custom/
 GRAB/output/
 GRAB/master/
