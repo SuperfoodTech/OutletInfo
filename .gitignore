@@ -23,7 +23,13 @@ GRAB/output/
 GRAB/master/
 GRAB/cache/
 SHOPEE/data/*.xlsx
+SHOPEE/data/chrome_profile/
 SHOPEE/data/chrome_profiles/
+SHOPEE/data/session*.json
+SHOPEE/src/shopee-omzet-automation/data/
+SHOPEE/src/shopee-omzet-automation/logs/
+SHOPEE/src/shopee-omzet-automation/sessions/
+SHOPEE/src/shopee-omzet-automation/backups/
 GOFOOD/data/
 GOFOOD/output/
 GOFOOD/master/

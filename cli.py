@@ -334,27 +334,27 @@ def shopee_select_outlets():
         return shopee_select_outlets()
 
 
-def shopee_run_scraper():
-    selected = shopee_select_outlets()
-    if selected is None:
-        return
+def shopee_run_interactive():
+    """Jalankan CLI interaktif Shopee untuk filter merchant."""
+    header("Shopee — CLI Interaktif")
+    script = os.path.join(SHOPEE_DIR, "cli.py")
+    run_script(script, cwd=SHOPEE_DIR)
+    wait()
 
-    header("Shopee — Menjalankan VB Automation")
-    vb_shopee_script = os.path.join(SHOPEE_DIR, "run_baseline.py")
-    vb_shopee_dir = SHOPEE_DIR
 
-    if selected == "all":
-        info("Menjalankan scraper untuk SEMUA outlet Shopee...")
-        run_script(vb_shopee_script, cwd=vb_shopee_dir)
-    else:
-        merchant_name = selected.get("merchant_name", "")
-        info(f"Menjalankan scraper untuk outlet: {merchant_name}")
-        run_script(
-            vb_shopee_script,
-            cwd=vb_shopee_dir,
-            extra_args=["--merchant", merchant_name]
-        )
+def shopee_run_all():
+    """Jalankan penarikan data semua merchant Shopee."""
+    header("Shopee — Tarik Semua Outlet")
+    script = os.path.join(SHOPEE_DIR, "pull_outlet_info.py")
+    run_script(script, cwd=SHOPEE_DIR)
+    wait()
 
+
+def shopee_open_dashboard():
+    """Buka dashboard Shopee dalam mode idle."""
+    header("Shopee — Buka Dashboard")
+    script = os.path.join(SHOPEE_DIR, "open_dashboard.py")
+    run_script(script, cwd=SHOPEE_DIR)
     wait()
 
 
@@ -381,9 +381,9 @@ def shopee_check_output():
                 try:
                     df = pd.read_excel(f)
                     rows = len(df)
-                    print(c(f"  ✓ {name:<20}", GREEN) + c(f"  {rows:>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
+                    print(c(f"  ✓ {name:<25}", GREEN) + c(f"  {rows:>5} baris", CYAN) + c(f"  ({size//1024} KB)", DIM))
                 except Exception:
-                    print(c(f"  ? {name:<20}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
+                    print(c(f"  ? {name:<25}", YELLOW) + c(f"  ({size//1024} KB)", DIM))
         except ImportError:
             for f in files:
                 name = os.path.basename(f)
@@ -396,8 +396,10 @@ def menu_shopee():
     while True:
         header("Shopee Food Scraper")
         section("Menu Shopee")
-        menu_item("1", "▶", "Jalankan Scraper",   "Ambil data merchant dari Shopee Food")
-        menu_item("2", "📁", "Status Output",       "Lihat ringkasan file hasil scraping")
+        menu_item("1", "▶", "CLI Interaktif / Filter", "Pilih merchant by ID / Nama / Nomor Index")
+        menu_item("2", "🚀", "Tarik Semua Outlet",       "Jalankan auto-pull & switch semua merchant")
+        menu_item("3", "🌐", "Buka Dashboard (Idle)",    "Buka browser Shopee Partner tanpa timeout")
+        menu_item("4", "📁", "Status Output",            "Lihat ringkasan file hasil scraping")
         divider()
         menu_item("b", "↩", "Kembali ke Menu Utama")
         print()
@@ -405,8 +407,12 @@ def menu_shopee():
         choice = prompt("Pilih menu")
 
         if choice == "1":
-            shopee_run_scraper()
+            shopee_run_interactive()
         elif choice == "2":
+            shopee_run_all()
+        elif choice == "3":
+            shopee_open_dashboard()
+        elif choice == "4":
             shopee_check_output()
         elif choice.lower() == "b":
             break
