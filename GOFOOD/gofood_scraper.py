@@ -1240,6 +1240,7 @@ def main():
     parser.add_argument("--vb-url", type=str, help="URL Google Sheet / CSV khusus untuk VB")
     parser.add_argument("--url", type=str, help="URL Google Sheet / CSV custom")
     parser.add_argument("--portal", type=str, help="Portal name or number (e.g. 1, 2-3, all)")
+    parser.add_argument("--owner", type=str, help="Filter nama owner tertentu untuk ditarik")
     parser.add_argument("--all", action="store_true", help="Process all portals from CSV")
     parser.add_argument("--resume", action="store_true", help="Skip portals that have already been scraped")
     parser.add_argument("--combine-only", "--generate-master", dest="combine_only", action="store_true", help="Hanya gabungkan cache JSON menjadi file Master tanpa melakukan scraping")
@@ -1262,7 +1263,7 @@ def main():
         source_type = "vercel"
     elif args.agency or args.type == "agency":
         source_type = "agency"
-    elif not args.portal and not args.all and not args.combine_only:
+    elif not args.portal and not args.owner and not args.all and not args.combine_only:
         print("\n" + "=" * 60)
         print("  PILIH SUMBER KREDENSIAL GOFOOD")
         print("=" * 60)
@@ -1296,6 +1297,13 @@ def main():
             if not cache_p or not os.path.exists(cache_p):
                 target_portals.append(p)
         print(f"[*] Mode Resume: {len(target_portals)} portal tersisa untuk ditarik (dari total {len(portals)} portal).")
+    elif args.owner:
+        owner_clean = args.owner.strip().lower()
+        for p in portals:
+            p_owner = str(p.get('owner', '')).strip().lower()
+            if p_owner == owner_clean or owner_clean in p_owner:
+                target_portals.append(p)
+        print(f"[*] Filter Owner '{args.owner}': Ditemukan {len(target_portals)} akun portal GoFood.")
     elif args.all:
         target_portals = portals
         is_all_selected = True
