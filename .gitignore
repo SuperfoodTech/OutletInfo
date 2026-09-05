@@ -24,8 +24,8 @@ GRAB/output/
 GRAB/master/
 GRAB/cache/
 SHOPEE/data/*.xlsx
-SHOPEE/data/chrome_profile/
-SHOPEE/data/chrome_profiles/
+SHOPEE/data/chrome_profile*/
+SHOPEE/shopee/
 SHOPEE/data/session*.json
 SHOPEE/src/shopee-omzet-automation/data/
 SHOPEE/src/shopee-omzet-automation/logs/

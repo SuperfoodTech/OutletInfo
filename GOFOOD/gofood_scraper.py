@@ -565,8 +565,20 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
         else:
             target_url = GOOGLE_SHEET_AGENCY_URL
 
+    # 0. Gunakan cache lokal Vercel jika tersedia dan masih segar (< 15 menit)
+    if not data and st_lower == "vercel":
+        local_cache = BASE_DIR / "cache" / "vercel_sheet_cache.csv"
+        if local_cache.exists() and (time.time() - os.path.getmtime(local_cache) < 900):
+            try:
+                with open(local_cache, "r", encoding="utf-8") as f:
+                    data = list(csv.reader(f))
+                if data:
+                    print(f"[✓] Memuat {len(data)} baris data [VERCEL] dari cache lokal.")
+            except Exception:
+                pass
+
     # 1. Fetch live dari Google Sheet URL
-    if target_url:
+    if not data and target_url:
         try:
             print(f"[*] Mengambil data portal GoFood [{source_type.upper()}] langsung dari Google Sheet (Live URL)...")
             res = subprocess.run(['curl', '-s', '-L', target_url], capture_output=True, text=True, timeout=20)
@@ -606,6 +618,7 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
     header = [str(h).strip().lower() for h in data[0]]
     col_app = -1
     col_owner = -1
+    col_outlet = -1
     col_portal = -1
     col_email1 = -1
     col_email2 = -1
@@ -615,6 +628,7 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
     if st_lower == "agency":
         col_app = 3
         col_owner = 0
+        col_outlet = 1
         col_portal = 2
         col_email1 = 24
         col_email2 = 25
@@ -625,7 +639,9 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
                 col_app = i
             elif h in ['owner', 'nama pemilik', 'pemilik']:
                 col_owner = i
-            elif h in ['nama akses', 'nama portal', 'portal', 'nama outlet', 'brand']:
+            elif h in ['nama outlet', 'outlet']:
+                col_outlet = i
+            elif h in ['nama akses', 'nama portal', 'portal', 'brand']:
                 if col_portal == -1 or h in ['nama portal', 'portal', 'nama akses']:
                     col_portal = i
             elif h in ['email', 'email foodmaster1', 'email login', 'email 1', 'email1']:
@@ -667,7 +683,8 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
                 else:
                     portal = "Portal Unknown"
 
-            brand = portal.split(" - ")[0].strip() if " - " in portal else portal
+            # Ambil dari kolom Nama Outlet jika tersedia, fallback ke nama portal
+            brand = row[col_outlet].strip() if col_outlet != -1 and col_outlet < len(row) and row[col_outlet].strip() else (portal.split(" - ")[0].strip() if " - " in portal else portal)
             email1 = row[col_email1].strip() if col_email1 != -1 and col_email1 < len(row) else ""
             email2 = row[col_email2].strip() if col_email2 != -1 and col_email2 < len(row) else ""
             password = row[col_pass].strip() if col_pass != -1 and col_pass < len(row) else ""
@@ -762,7 +779,7 @@ def upload_to_drive(file_path):
         print(f"   ⚠️ Terjadi kesalahan saat mengunggah: {e}")
 
 
-def combine_master(cache_dir=None, master_dir=None, output_dir=None, source_type=None):
+def combine_master(cache_dir=None, master_dir=None, output_dir=None, source_type=None, no_upload=False):
     import pandas as pd
     import glob
     import json
@@ -872,7 +889,7 @@ def combine_master(cache_dir=None, master_dir=None, output_dir=None, source_type
         print(f"    Total baris: {len(master_df)}")
         print(f"    Total kolom: 37 (Template YYYY-MM-DD HH_MM Nama Pemilik.xlsx)")
         
-        if APP_SCRIPT_URL:
+        if APP_SCRIPT_URL and not no_upload:
             upload_to_drive(str(master_path))
 
 
@@ -1244,7 +1261,11 @@ def main():
     parser.add_argument("--all", action="store_true", help="Process all portals from CSV")
     parser.add_argument("--resume", action="store_true", help="Skip portals that have already been scraped")
     parser.add_argument("--combine-only", "--generate-master", dest="combine_only", action="store_true", help="Hanya gabungkan cache JSON menjadi file Master tanpa melakukan scraping")
-    parser.add_argument("--headless", action="store_true", help="Run browser in headless mode")
+    headless_env = os.getenv("HEADLESS_GOFOOD", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+    parser.add_argument("--headless", action="store_true", default=headless_env, help=f"Run browser in headless mode (default: {headless_env})")
+    parser.add_argument("--gui", dest="headless", action="store_false", help="Tampilkan jendela browser GUI")
+    parser.add_argument("--no-master", action="store_true", help="Jangan buat/perbarui file master dan file per-owner semua pemilik")
+    parser.add_argument("--no-upload", action="store_true", help="Jangan unggah file ke Drive secara mandiri dari scraper")
     args = parser.parse_args()
 
     print("="*60)
@@ -1861,11 +1882,12 @@ def main():
                     save_formatted_excel(owner_df, str(owner_file))
                     print(f"\n   💾 File Owner '{owner_name}' berhasil dibuat di output/: {owner_file.name} (Total: {len(owner_df)} outlet)")
                     
-                    if APP_SCRIPT_URL:
+                    if APP_SCRIPT_URL and not args.no_upload:
                         upload_to_drive(str(owner_file))
         
-    # Selalu perbarui file master dari cache yang terkumpul
-    combine_master(source_type=source_type)
+    # Perbarui file master hanya jika tidak dinonaktifkan dan bukan mode single-owner
+    if not args.no_master and not args.owner:
+        combine_master(source_type=source_type, no_upload=args.no_upload)
 
 
 if __name__ == "__main__":

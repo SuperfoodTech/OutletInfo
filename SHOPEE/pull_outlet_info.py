@@ -23,12 +23,13 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-# Auto-detect and switch to .venv python if not active
+# Auto-detect and switch to root .venv python if not active
 SCRIPT_DIR = Path(__file__).resolve().parent
-for venv_candidate in [SCRIPT_DIR / ".venv" / "bin" / "python", SCRIPT_DIR.parent / ".venv" / "bin" / "python", SCRIPT_DIR.parent.parent / ".venv" / "bin" / "python"]:
-    if venv_candidate.exists() and sys.executable != str(venv_candidate):
-        os.execv(str(venv_candidate), [str(venv_candidate)] + sys.argv)
-        break
+if sys.prefix == sys.base_prefix:
+    root_venv = SCRIPT_DIR.parent / ".venv" / "bin" / "python"
+    if root_venv.exists() and sys.executable != str(root_venv):
+        os.execv(str(root_venv), [str(root_venv), str(Path(__file__).resolve())] + sys.argv[1:])
+
 
 import requests
 import pandas as pd
@@ -52,6 +53,10 @@ if str(AUTOMATION_DIR) not in sys.path:
     sys.path.insert(0, str(AUTOMATION_DIR))
 
 from core import browser
+from dotenv import load_dotenv
+
+load_dotenv(SCRIPT_DIR.parent / ".env")
+HEADLESS_DEFAULT = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
 
 # FORCE the profile directory (same pattern as menu_core/shopee.py)
 orig_add_argument = Options.add_argument
@@ -136,7 +141,7 @@ def get_owner_brand_mapping():
             df = pd.read_csv(agency_url)
             for _, row in df.iterrows():
                 o = str(row.get("Owner") or "").strip()
-                b = str(row.get("Brand") or "").strip()
+                b = str(row.get("Nama Outlet") or row.get("Brand") or "").strip()
                 if b and o:
                     mapping[b.lower()] = (o, b)
         except Exception:
@@ -525,7 +530,7 @@ browser.auto_switch_merchant = enhanced_auto_switch_merchant
 # ──────────────────────────────────────────────────────────────
 # Authentication
 # ──────────────────────────────────────────────────────────────
-def get_auth_session(target_name: str, target_merchant_id: str | int = None, occurrence_index: int = 0) -> tuple:
+def get_auth_session(target_name: str, target_merchant_id: str | int = None, occurrence_index: int = 0, headless: bool = None) -> tuple:
     """
     Launch browser, login as allvbadmin, switch to target merchant by ID/name, extract tokens, close browser.
     Returns (tob_token, entity_id, extra_cookies) or raises on failure.
@@ -533,6 +538,9 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, occ
     global CURRENT_OCCURRENCE_INDEX, CURRENT_TARGET_MERCHANT_ID
     CURRENT_OCCURRENCE_INDEX = occurrence_index
     CURRENT_TARGET_MERCHANT_ID = target_merchant_id
+
+    if headless is None:
+        headless = HEADLESS_DEFAULT
 
     browser.set_session_file(SESSION_FILE)
 
@@ -546,12 +554,12 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, occ
         except Exception:
             pass
 
-    print(f"[*] Membuka browser (headless=False) dan memilih merchant: '{target_name}' (ID: {target_merchant_id or '-'}, Occ: {occurrence_index})...")
+    print(f"[*] Membuka browser (headless={headless}) dan memilih merchant: '{target_name}' (ID: {target_merchant_id or '-'}, Occ: {occurrence_index})...")
     
     session_data = browser.get_session(
         username=username,
         password=password,
-        headless=False,
+        headless=headless,
         close_browser=False,
         target_name=target_name,
         interactive=False,
@@ -776,11 +784,14 @@ def run_pull(
     no_resume: bool = False,
     include_excluded: bool = False,
     output_path: Path | str = None,
+    headless: bool = None,
 ) -> Path | None:
     """
     Main executor for pulling outlet information.
     Can be called directly from CLI or other modules.
     """
+    if headless is None:
+        headless = HEADLESS_DEFAULT
     print("=" * 70)
     print("  SHOPEE OUTLET INFO PULLER")
     if not include_excluded:
@@ -869,6 +880,7 @@ def run_pull(
                 target_name=merchant_name,
                 target_merchant_id=merchant_id,
                 occurrence_index=occ_idx,
+                headless=headless,
             )
         except Exception as e:
             print(f"  [!] Gagal auth untuk merchant '{merchant_name}': {e}")
@@ -1120,7 +1132,11 @@ def main():
     parser.add_argument("--no-resume", action="store_true", help="Abaikan data existing dan tarik ulang dari awal")
     parser.add_argument("--include-excluded", action="store_true", help="Sertakan merchant yang masuk daftar blacklist/exclude")
     parser.add_argument("--output", "-o", type=str, default=None, help="Lokasi/nama file output excel")
+    parser.add_argument("--gui", action="store_true", help="Tampilkan jendela browser GUI")
+    parser.add_argument("--headless", action="store_true", default=HEADLESS_DEFAULT, help=f"Jalankan browser dalam mode headless (default: {HEADLESS_DEFAULT})")
     args = parser.parse_args()
+
+    headless_mode = False if args.gui else args.headless
 
     run_pull(
         target_merchant_id=args.merchant_id,
@@ -1128,6 +1144,7 @@ def main():
         no_resume=args.no_resume,
         include_excluded=args.include_excluded,
         output_path=args.output,
+        headless=headless_mode,
     )
 
 

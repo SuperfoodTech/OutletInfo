@@ -29,6 +29,9 @@ import hashlib
 import datetime
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from dotenv import load_dotenv
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
 GRAB_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(GRAB_DIR, "cache")
 OUTPUT_DIR = os.path.join(GRAB_DIR, "output")
@@ -69,8 +72,20 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
         else:
             target_url = GOOGLE_SHEET_AGENCY_URL
 
+    # 0. Gunakan cache lokal Vercel jika tersedia dan masih segar (< 15 menit)
+    if not data and st_lower == "vercel":
+        local_cache = os.path.join(BASE_DIR, "cache", "vercel_sheet_cache.csv")
+        if os.path.exists(local_cache) and (time.time() - os.path.getmtime(local_cache) < 900):
+            try:
+                with open(local_cache, "r", encoding="utf-8") as f:
+                    data = list(csv.reader(f))
+                if data:
+                    logger.info(f"[✓] Memuat {len(data)} baris data [VERCEL] dari cache lokal.")
+            except Exception:
+                pass
+
     # 1. Coba ambil secara live dari Google Sheet URL
-    if target_url:
+    if not data and target_url:
         try:
             logger.info(f"[*] Mengambil data portal Grab [{source_type.upper()}] langsung dari Google Sheet (Live URL)...")
             res = subprocess.run(['curl', '-s', '-L', target_url], capture_output=True, text=True, timeout=20)
@@ -116,9 +131,11 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
     col_pass = -1
     col_notes = -1
 
+    col_outlet = -1
     if st_lower == "agency":
         col_app = 3
         col_owner = 0
+        col_outlet = 1
         col_portal = 2
         col_user = 26
         col_pass = 28
@@ -175,7 +192,8 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
             if not portal and col_outlet != -1 and col_outlet < len(row):
                 portal = row[col_outlet].strip()
 
-            brand = portal.split(" - ")[0].strip() if " - " in portal else portal
+            # Sesuai instruksi user: untuk kolom brand ambil dari kolom Nama Outlet saja
+            brand = row[col_outlet].strip() if col_outlet != -1 and col_outlet < len(row) and row[col_outlet].strip() else (portal.split(" - ")[0].strip() if " - " in portal else portal)
             username = row[col_user].strip() if col_user != -1 and col_user < len(row) else ""
             password = row[col_pass].strip() if col_pass != -1 and col_pass < len(row) else ""
             
@@ -670,7 +688,7 @@ async def fetch_merchant_list_fast(headers, cookies_dict, cred, max_retries=3):
         logger.info(f"⚡ [FAST PATH] Berhasil mengekstrak {len(all_results)} outlet via curl_cffi!")
         return all_results
 
-async def run_scraper_for_credential(playwright, cred, force_fresh=False):
+async def run_scraper_for_credential(playwright, cred, force_fresh=False, headless=None):
     global auth_headers
     headers_file = os.path.join(SESSIONS_DIR, f"grab_headers_{cred['name']}.json")
     session_file = os.path.join(SESSIONS_DIR, f"grab_session_{cred['name']}.json")
@@ -698,13 +716,15 @@ async def run_scraper_for_credential(playwright, cred, force_fresh=False):
         except Exception as e:
             logger.debug(f"Fast path failed: {e}")
             
-    return await run_scraper_for_credential_playwright(playwright, cred, force_fresh)
+    return await run_scraper_for_credential_playwright(playwright, cred, force_fresh, headless=headless)
 
-async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=False):
-
+async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=False, headless=None):
     """Run scraper for a single credential set."""
     global auth_headers
     auth_headers = {}
+
+    if headless is None:
+        headless = os.getenv("HEADLESS_GRAB", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
 
     logger.info(f"\n{'='*50}")
     if force_fresh:
@@ -714,7 +734,7 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
     logger.info(f"{'='*50}")
 
     browser = await playwright.chromium.launch(
-        headless=True,
+        headless=headless,
         args=[
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
@@ -1203,6 +1223,10 @@ async def main():
     parser.add_argument("--all", action="store_true", help="Run for all portals without prompt")
     parser.add_argument("--fresh", action="store_true", help="Start fresh run and ignore previous progress checkpoint")
     parser.add_argument("--combine", action="store_true", help="Gabungkan file cache JSON ke master & output tanpa scraping ulang")
+    parser.add_argument("--no-master", action="store_true", help="Lewati pembuatan file master dan output gabungan")
+    headless_env = os.getenv("HEADLESS_GRAB", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+    parser.add_argument("--headless", action="store_true", default=headless_env, help=f"Run browser in headless mode (default: {headless_env})")
+    parser.add_argument("--gui", dest="headless", action="store_false", help="Tampilkan jendela browser GUI")
     args = parser.parse_args()
 
     source_type = "agency"
@@ -1313,14 +1337,14 @@ async def main():
                 continue
 
             logger.info(f"\n▶️ [{idx}/{len(target_credentials)}] Memproses portal: {cred['name']} (Owner: {cred.get('owner', '-')})...")
-            stores_res = await run_scraper_for_credential(playwright, cred, force_fresh=args.fresh)
+            stores_res = await run_scraper_for_credential(playwright, cred, force_fresh=args.fresh, headless=args.headless)
             
             retry_count = 0
             while not stores_res and retry_count < 2:
                 retry_count += 1
                 logger.warning(f"[!] Portal {cred['name']} gagal diproses/login. Melakukan retry ke-{retry_count} dari 2...")
                 await asyncio.sleep(5)
-                stores_res = await run_scraper_for_credential(playwright, cred, force_fresh=True)
+                stores_res = await run_scraper_for_credential(playwright, cred, force_fresh=True, headless=args.headless)
 
             if stores_res and isinstance(stores_res, list):
                 valid_stores = [s for s in stores_res if isinstance(s, dict)]
@@ -1369,7 +1393,10 @@ async def main():
         logger.info(f"[✓] File Template Baru tersimpan di output/: {os.path.basename(owner_file)} ({len(df_owner)} baris)")
 
     # 2. Gabungkan seluruh cache ke Master di master/0master.xlsx (atau VB_master.xlsx)
-    combine_master(source_type=source_type)
+    if not args.no_master and not getattr(args, "owner", None) and not getattr(args, "outlet", None) and not getattr(args, "outlets", None):
+        combine_master(source_type=source_type)
+    else:
+        logger.info("⏩ Melewati pembuatan Master Grab file (mode per-owner / spesifik / --no-master aktif).")
 
     # Bersihkan checkpoint jika semua proses selesai sukses
     if os.path.exists(progress_file):

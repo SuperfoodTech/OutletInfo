@@ -60,43 +60,87 @@ def create_progress_bar(percent: int, length: int = 15) -> str:
 
 # ─── Discord Views & UI Components ────────────────────────────────────────────
 
+# ─── Discord Views & UI Components ────────────────────────────────────────────
+
+def get_available_platforms_for_owner(owner_name, owners_meta):
+    """Mendapatkan daftar aplikator yang dimiliki owner dari metadata Vercel."""
+    if not owner_name or owner_name == "__ALL__":
+        return ["gofood", "grab", "shopee"]
+    for m in owners_meta:
+        if m["owner"].strip().lower() == owner_name.strip().lower():
+            platforms = []
+            if m.get("gofood", 0) > 0:
+                platforms.append("gofood")
+            if m.get("grab", 0) > 0:
+                platforms.append("grab")
+            if m.get("shopee", 0) > 0:
+                platforms.append("shopee")
+            return platforms if platforms else ["gofood", "grab", "shopee"]
+    return ["gofood", "grab", "shopee"]
+
+
+def build_aplikator_options(available_platforms, current_selected="all"):
+    """Menyusun opsi dropdown aplikator secara dinamis sesuai platform yang dimiliki owner."""
+    options = []
+    platform_map = {
+        "gofood": ("GoFood Saja", "🔴"),
+        "grab": ("GrabFood Saja", "🟢"),
+        "shopee": ("ShopeeFood Saja", "🟠")
+    }
+
+    # Jika memiliki lebih dari 1 platform, tambahkan opsi "Semua Platform"
+    if len(available_platforms) > 1:
+        names = []
+        for p in available_platforms:
+            if p == "gofood": names.append("GoFood")
+            elif p == "grab": names.append("Grab")
+            elif p == "shopee": names.append("Shopee")
+        options.append(discord.SelectOption(
+            label=f"Semua Platform ({' + '.join(names)})"[:100],
+            value="all",
+            emoji="🌐"
+        ))
+
+    for p in available_platforms:
+        if p in platform_map:
+            lbl, emj = platform_map[p]
+            options.append(discord.SelectOption(
+                label=lbl,
+                value=p,
+                emoji=emj
+            ))
+
+    valid_values = [opt.value for opt in options]
+    chosen = current_selected if current_selected in valid_values else valid_values[0]
+    for opt in options:
+        opt.default = (opt.value == chosen)
+
+    return options, chosen
+
+
 class AplikatorSelect(discord.ui.Select):
     def __init__(self, parent_view):
         self.parent_view = parent_view
-        options = [
-            discord.SelectOption(
-                label="Semua Platform (GoFood + Grab + Shopee)",
-                value="all",
-                emoji="🌐",
-                default=True
-            ),
-            discord.SelectOption(
-                label="GoFood Saja",
-                value="gofood",
-                emoji="🔴"
-            ),
-            discord.SelectOption(
-                label="GrabFood Saja",
-                value="grab",
-                emoji="🟢"
-            ),
-            discord.SelectOption(
-                label="ShopeeFood Saja",
-                value="shopee",
-                emoji="🟠"
-            )
-        ]
+        platforms = get_available_platforms_for_owner(parent_view.selected_owner, parent_view.owners_meta)
+        options, chosen = build_aplikator_options(platforms, parent_view.selected_aplikator)
+        parent_view.selected_aplikator = chosen
         super().__init__(
-            placeholder="📌 Langkah 1: Pilih Aplikator...",
+            placeholder="📌 Langkah 2: Pilih Aplikator...",
             min_values=1,
             max_values=1,
             options=options,
-            row=0
+            row=1
         )
+
+    def refresh_options(self):
+        """Memperbarui opsi aplikator secara dinamis sesuai owner yang dipilih."""
+        platforms = get_available_platforms_for_owner(self.parent_view.selected_owner, self.parent_view.owners_meta)
+        options, chosen = build_aplikator_options(platforms, self.parent_view.selected_aplikator)
+        self.parent_view.selected_aplikator = chosen
+        self.options = options
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.selected_aplikator = self.values[0]
-        # Update default state
         for opt in self.options:
             opt.default = (opt.value == self.values[0])
         await self.parent_view.update_panel(interaction)
@@ -111,31 +155,42 @@ class OwnerSelect(discord.ui.Select):
         options.append(discord.SelectOption(
             label="[Semua Owner Terdaftar]",
             value="__ALL__",
-            emoji="📦"
+            description="Proses seluruh owner multi-platform",
+            emoji="📦",
+            default=(parent_view.selected_owner == "__ALL__")
         ))
 
         # Discord batas maksimal 25 opsi per select (1 batch + 24 owner)
         for meta in owners_meta[:24]:
             owner_name = meta["owner"]
+            desc_parts = []
+            if meta.get("gofood", 0) > 0: desc_parts.append(f"Go:{meta['gofood']}")
+            if meta.get("grab", 0) > 0: desc_parts.append(f"Grab:{meta['grab']}")
+            if meta.get("shopee", 0) > 0: desc_parts.append(f"Shopee:{meta['shopee']}")
+            desc = " • ".join(desc_parts) if desc_parts else "Data Vercel"
+
             options.append(discord.SelectOption(
                 label=owner_name[:100],
                 value=owner_name,
+                description=desc[:100],
                 emoji="👤",
-                default=(not parent_view.selected_owner and owner_name == owners_meta[0]["owner"])
+                default=(owner_name == parent_view.selected_owner)
             ))
 
         super().__init__(
-            placeholder="👤 Langkah 2: Pilih Owner...",
+            placeholder="👤 Langkah 1: Pilih Owner...",
             min_values=1,
             max_values=1,
             options=options,
-            row=1
+            row=0
         )
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.selected_owner = self.values[0]
         for opt in self.options:
             opt.default = (opt.value == self.values[0])
+        # Perbarui dropdown aplikator secara dinamis mengikuti platform owner yang dipilih
+        self.parent_view.aplikator_select.refresh_options()
         await self.parent_view.update_panel(interaction)
 
 
@@ -182,16 +237,16 @@ class ControlPanelView(discord.ui.View):
         self.clear_items()
         self.owners_meta = get_owners_with_metadata()
         if self.owners_meta and not self.selected_owner:
-            # Default ke owner yang paling baru di-generate
             self.selected_owner = self.owners_meta[0]["owner"]
             
-        self.aplikator_select = AplikatorSelect(self)
         self.owner_select = OwnerSelect(self, self.owners_meta)
+        self.aplikator_select = AplikatorSelect(self)
         self.generate_btn = GenerateButton(self)
         self.refresh_btn = RefreshButton(self)
 
-        self.add_item(self.aplikator_select)
+        # Urutan baris: Row 0 (Owner), Row 1 (Aplikator Dinamis), Row 2 (Tombol Aksi)
         self.add_item(self.owner_select)
+        self.add_item(self.aplikator_select)
         self.add_item(self.generate_btn)
         self.add_item(self.refresh_btn)
 
@@ -208,9 +263,16 @@ class ControlPanelView(discord.ui.View):
         )
         embed.set_thumbnail(url=STORE_THUMBNAIL)
 
-        # Mapping Nama Aplikator
+        # Mapping Nama Aplikator Dinamis sesuai platform yang tersedia
+        platforms = get_available_platforms_for_owner(self.selected_owner, self.owners_meta)
+        names = []
+        for p in platforms:
+            if p == "gofood": names.append("GoFood")
+            elif p == "grab": names.append("Grab")
+            elif p == "shopee": names.append("Shopee")
+
         app_names = {
-            "all": "🌐 Semua Platform (GoFood + Grab + Shopee)",
+            "all": f"🌐 Semua Platform ({' + '.join(names)})" if len(names) > 1 else f"🌐 Semua Platform ({names[0]})" if names else "🌐 Semua Platform",
             "gofood": "🔴 GoFood Saja",
             "grab": "🟢 GrabFood Saja",
             "shopee": "🟠 ShopeeFood Saja"
@@ -223,8 +285,8 @@ class ControlPanelView(discord.ui.View):
         else:
             owner_display = f"👤 **{self.selected_owner}**"
 
-        embed.add_field(name="📌 Aplikator Terpilih", value=f"**{aplikator_label}**", inline=True)
         embed.add_field(name="👤 Owner Terpilih", value=f"{owner_display}", inline=True)
+        embed.add_field(name="📌 Aplikator Terpilih", value=f"**{aplikator_label}**", inline=True)
         embed.add_field(
             name="📁 Tujuan Google Drive",
             value=f"[Buka Folder Induk](https://drive.google.com/drive/u/0/folders/19VIrypPcBmNNbjDLGS7kxp_yIdBBwXjB)",
@@ -267,9 +329,15 @@ class ControlPanelView(discord.ui.View):
 
         log_buffer = [f"[{datetime.datetime.now().strftime('%H:%M:%S')}] \u001b[34m[START]\u001b[0m Pipeline dimulai."]
         last_update_time = datetime.datetime.now()
+        is_finished = False
+        edit_lock = asyncio.Lock()
 
         async def discord_progress_callback(percent: int, log_msg: str):
             nonlocal last_update_time
+            # Jangan perbarui progress_embed lagi jika proses sudah selesai atau mencapai 100%
+            if is_finished or percent >= 100:
+                return
+
             now_str = datetime.datetime.now().strftime("%H:%M:%S")
             
             # Beri warna ANSI
@@ -286,8 +354,8 @@ class ControlPanelView(discord.ui.View):
             if len(log_buffer) > 8:
                 log_buffer.pop(0)
 
-            # Batasi frekuensi edit pesan agar tidak terkena Discord Rate Limit (minimal 1.2 detik sekali)
-            if (datetime.datetime.now() - last_update_time).total_seconds() > 1.2 or percent >= 100:
+            # Batasi frekuensi edit pesan agar tidak terkena Discord Rate Limit (minimal 1.5 detik sekali)
+            if (datetime.datetime.now() - last_update_time).total_seconds() >= 1.5:
                 last_update_time = datetime.datetime.now()
                 log_text = "\n".join(log_buffer)
                 progress_embed.description = f"Sedang memproses owner **{self.selected_owner}**...\n\n{create_progress_bar(percent)}"
@@ -297,10 +365,11 @@ class ControlPanelView(discord.ui.View):
                     value=f"```ansi\n{log_text}\n```",
                     inline=False
                 )
-                try:
-                    await interaction.edit_original_response(embed=progress_embed, view=None)
-                except Exception:
-                    pass
+                async with edit_lock:
+                    try:
+                        await interaction.edit_original_response(embed=progress_embed, view=None)
+                    except Exception as e:
+                        print(f"⚠️ Abaikan error minor progress edit: {e}")
 
         # Jalankan di ThreadPoolExecutor agar tidak memblokir event loop asyncio bot
         loop = asyncio.get_running_loop()
@@ -321,6 +390,10 @@ class ControlPanelView(discord.ui.View):
             result = await loop.run_in_executor(None, run_task)
         except Exception as e:
             result = {"success": False, "error": str(e)}
+
+        # Tandai proses selesai & beri jeda sejenak agar request progress terakhir di event loop tuntas
+        is_finished = True
+        await asyncio.sleep(0.8)
 
         # Selesai: Tampilkan Embed Sukses / Gagal
         if result.get("success"):
@@ -355,20 +428,17 @@ class ControlPanelView(discord.ui.View):
                     self.add_item(discord.ui.Button(label="Folder Induk Drive", url=ROOT_DRIVE_URL, style=discord.ButtonStyle.link, emoji="🌐"))
 
             res_view = ResultView(folder_url, file_url)
-            await interaction.edit_original_response(embed=success_embed, view=res_view)
-
-            # Kirim pesan notifikasi baru ke channel (dengan mention user) agar Discord memicu notifikasi suara/unread badge
-            try:
-                msg_content = (
-                    f"🔔 <@{interaction.user.id}> **File Berhasil Dibuat & Diunggah ke Google Drive!**\n"
-                    f"• **Owner:** {result['owner']}\n"
-                    f"• **File:** `{result['filename']}`\n"
-                    f"• **Total Outlet:** {result['total']}\n"
-                    f"• **Folder Drive:** {folder_url}"
-                )
-                await interaction.followup.send(content=msg_content)
-            except Exception as e:
-                print(f"⚠️ Gagal mengirim pesan notifikasi lanjutan: {e}")
+            
+            # Update embed dengan penguncian & percobaan ulang jika terkena rate limit
+            async with edit_lock:
+                for attempt in range(3):
+                    try:
+                        await interaction.edit_original_response(embed=success_embed, view=res_view)
+                        print(f"✅ Success embed berhasil diperbarui untuk '{result['owner']}'.")
+                        break
+                    except Exception as e:
+                        print(f"⚠️ Gagal update success embed (percobaan {attempt+1}): {e}")
+                        await asyncio.sleep(1.5)
 
         else:
             error_embed = discord.Embed(
@@ -382,15 +452,15 @@ class ControlPanelView(discord.ui.View):
             # Enable buttons again
             for item in self.children:
                 item.disabled = False
-            await interaction.edit_original_response(embed=error_embed, view=self)
-
-            # Kirim notifikasi error ke user
-            try:
-                await interaction.followup.send(
-                    content=f"❌ <@{interaction.user.id}> **Gagal memproses data untuk {self.selected_owner}:** {result.get('error', 'Unknown Error')}"
-                )
-            except Exception:
-                pass
+                
+            async with edit_lock:
+                for attempt in range(3):
+                    try:
+                        await interaction.edit_original_response(embed=error_embed, view=self)
+                        break
+                    except Exception as e:
+                        print(f"⚠️ Gagal update error embed (percobaan {attempt+1}): {e}")
+                        await asyncio.sleep(1.5)
 
 
 # ─── Bot Setup & Commands ─────────────────────────────────────────────────────
