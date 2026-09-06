@@ -74,7 +74,6 @@ SELLER_BASE = "https://foody.shopee.co.id"
 TEMPLATE_FILE = SCRIPT_DIR / "YYYY-MM-DD HH_MM Nama Pemilik.xlsx"
 SESSION_FILE = SCRIPT_DIR / "data" / "session.json"
 CREDS_FILE = SCRIPT_DIR / "credentials.json"
-BANK_ACC_FILE = SCRIPT_DIR / "bank_acc.json"
 OUTPUT_DIR = SCRIPT_DIR / "data"
 
 # Default credentials fallback
@@ -951,17 +950,8 @@ def run_pull(
                 "Alamat": "-",
             })
 
-    # Load Owner & Brand mapping serta Bank details
+    # Load Owner & Brand mapping
     owner_map = get_owner_brand_mapping()
-    bank_info = {}
-    if BANK_ACC_FILE.exists():
-        try:
-            bank_info = json.loads(BANK_ACC_FILE.read_text())
-        except Exception:
-            pass
-    bank_name = bank_info.get("BANK_NAME", "BCA")
-    bank_owner = bank_info.get("BANK_ACCOUNT_NAME", "JEFFRI ROHMANDO AULIA")
-    bank_no = bank_info.get("BANK_ACCOUNT") or bank_info.get("BANK_ACCOUNT_NO", "0644888882")
 
     # Standardize records for export (Columns A-Q) and deduplicate
     standardized_results = []
@@ -1022,9 +1012,9 @@ def run_pull(
             "Store ID": store_id,
             "Status Listing": status_val,
             "Alamat": r.get("Alamat") or "",
-            "Nama Bank": bank_name,
-            "Nama Pemilik Rekening": bank_owner,
-            "Nomor Rekening": bank_no,
+            "Nama Bank": "",
+            "Nama Pemilik Rekening": "",
+            "Nomor Rekening": "",
         })
 
     # Sort rows by Nama Pemilik, Nama Portal, dan Nama Listing

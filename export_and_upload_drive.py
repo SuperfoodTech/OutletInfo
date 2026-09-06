@@ -773,23 +773,6 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
     except Exception as e:
         print(f"⚠️ Info enrich scraped: {e}")
 
-    # Cek bank_acc.json untuk Shopee jika rekening belum terisi
-    bank_json_path = SHOPEE_DIR / "bank_acc.json"
-    if bank_json_path.exists():
-        try:
-            with open(bank_json_path, "r") as f:
-                b_acc = json.load(f)
-            for idx, row in owner_df.iterrows():
-                if row.get("Aplikator") == "ShopeeFood":
-                    if pd.isna(row.get("Nama Bank")) or not str(row.get("Nama Bank")).strip():
-                        owner_df.at[idx, "Nama Bank"] = b_acc.get("BANK_NAME", "")
-                    if pd.isna(row.get("Nama Pemilik Rekening")) or not str(row.get("Nama Pemilik Rekening")).strip():
-                        owner_df.at[idx, "Nama Pemilik Rekening"] = b_acc.get("BANK_ACCOUNT_NAME", "")
-                    if pd.isna(row.get("Nomor Rekening")) or not str(row.get("Nomor Rekening")).strip():
-                        owner_df.at[idx, "Nomor Rekening"] = b_acc.get("BANK_ACCOUNT", "")
-        except Exception:
-            pass
-
     go_n = len(owner_df[owner_df["Aplikator"] == "GoFood"]) if "Aplikator" in owner_df.columns else 0
     gr_n = len(owner_df[owner_df["Aplikator"] == "GrabFood"]) if "Aplikator" in owner_df.columns else 0
     sh_n = len(owner_df[owner_df["Aplikator"] == "ShopeeFood"]) if "Aplikator" in owner_df.columns else 0
