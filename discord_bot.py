@@ -31,12 +31,14 @@ BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "").strip()
 ROOT_DRIVE_URL = "https://drive.google.com/drive/u/0/folders/19VIrypPcBmNNbjDLGS7kxp_yIdBBwXjB"
 
-# Import helper dari export_and_upload_drive
+# Import helper dari export_and_upload_drive & pipeline_lock
 try:
     from export_and_upload_drive import get_owners_with_metadata, generate_for_owner_pipeline
+    from pipeline_lock import is_pipeline_locked, get_lock_info
 except ImportError:
     sys.path.append(str(BASE_DIR))
     from export_and_upload_drive import get_owners_with_metadata, generate_for_owner_pipeline
+    from pipeline_lock import is_pipeline_locked, get_lock_info
 
 
 # ─── Visual Helpers & Themes ──────────────────────────────────────────────────
@@ -163,16 +165,33 @@ class OwnerSelect(discord.ui.Select):
         # Discord batas maksimal 25 opsi per select (1 batch + 24 owner)
         for meta in owners_meta[:24]:
             owner_name = meta["owner"]
+            brand = meta.get("brand", "").strip()
+
             desc_parts = []
             if meta.get("gofood", 0) > 0: desc_parts.append(f"Go:{meta['gofood']}")
             if meta.get("grab", 0) > 0: desc_parts.append(f"Grab:{meta['grab']}")
             if meta.get("shopee", 0) > 0: desc_parts.append(f"Shopee:{meta['shopee']}")
-            desc = " • ".join(desc_parts) if desc_parts else "Data Vercel"
+            counts_str = " • ".join(desc_parts) if desc_parts else ""
+
+            if brand and counts_str:
+                raw_desc = f"{brand} ({counts_str})"
+            elif brand:
+                raw_desc = brand
+            else:
+                raw_desc = counts_str or "Data Vercel"
+
+            # Discord membatasi panjang deskripsi maksimal 100 karakter
+            if len(raw_desc) > 100:
+                if counts_str:
+                    max_b_len = 100 - len(counts_str) - 6
+                    raw_desc = f"{brand[:max_b_len]}... ({counts_str})"
+                else:
+                    raw_desc = brand[:97] + "..."
 
             options.append(discord.SelectOption(
                 label=owner_name[:100],
                 value=owner_name,
-                description=desc[:100],
+                description=raw_desc[:100],
                 emoji="👤",
                 default=(owner_name == parent_view.selected_owner)
             ))
@@ -279,11 +298,20 @@ class ControlPanelView(discord.ui.View):
         }
         aplikator_label = app_names.get(self.selected_aplikator, self.selected_aplikator)
 
-        # Info owner terpilih tanpa keterangan berbelit
+        # Info owner terpilih dan brand
+        owner_brand = ""
+        for m in self.owners_meta:
+            if m["owner"].strip().lower() == str(self.selected_owner).strip().lower():
+                owner_brand = m.get("brand", "")
+                break
+
         if self.selected_owner == "__ALL__":
             owner_display = "📦 Semua Owner Terdaftar"
         else:
-            owner_display = f"👤 **{self.selected_owner}**"
+            if owner_brand:
+                owner_display = f"👤 **{self.selected_owner}**\n🏷️ `{owner_brand}`"
+            else:
+                owner_display = f"👤 **{self.selected_owner}**"
 
         embed.add_field(name="👤 Owner Terpilih", value=f"{owner_display}", inline=True)
         embed.add_field(name="📌 Aplikator Terpilih", value=f"**{aplikator_label}**", inline=True)
@@ -292,7 +320,15 @@ class ControlPanelView(discord.ui.View):
             value=f"[Buka Folder Induk](https://drive.google.com/drive/u/0/folders/19VIrypPcBmNNbjDLGS7kxp_yIdBBwXjB)",
             inline=True
         )
-        embed.add_field(name="⚙️ Status Pipeline", value="`🟢 Siap Dijalankan`", inline=False)
+        # Status Pipeline dengan JobLock guard
+        if is_pipeline_locked():
+            lock_info = get_lock_info()
+            busy_owner = lock_info.get("owner", "Owner lain")
+            status_text = f"`🟡 Sedang Memproses ({busy_owner})`"
+        else:
+            status_text = "`🟢 Siap Dijalankan`"
+
+        embed.add_field(name="⚙️ Status Pipeline", value=status_text, inline=False)
 
         embed.set_footer(
             text=f"Diminta oleh {self.user.display_name} • Superfood Tech Engine (Vercel Sheet)",
@@ -310,10 +346,48 @@ class ControlPanelView(discord.ui.View):
     async def start_generation(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
+        # 🛡️ JobLock Guard: Periksa apakah pipeline sedang aktif memproses tugas lain
+        if is_pipeline_locked():
+            lock_info = get_lock_info()
+            busy_owner = lock_info.get("owner", "Owner lain")
+            busy_user = lock_info.get("user", "Pengguna lain")
+            started_at = lock_info.get("started_at", "")
+            time_str = ""
+            if started_at:
+                try:
+                    dt = datetime.datetime.fromisoformat(started_at)
+                    time_str = f" (dimulai pukul `{dt.strftime('%H:%M:%S')}`)"
+                except Exception:
+                    pass
+
+            busy_embed = discord.Embed(
+                title="⏳ SISTEM SEDANG SIBUK",
+                description=(
+                    f"Pipeline saat ini sedang memproses data untuk **{busy_owner}** "
+                    f"(diminta oleh **{busy_user}**{time_str}).\n\n"
+                    "🛡️ **JobLock Aktif:** Untuk menjaga keabsahan data dan menghindari pemblokiran IP oleh aplikator, "
+                    "proses penarikan data dijalankan satu per satu secara berurutan.\n\n"
+                    "👉 *Silakan tunggu hingga proses tersebut selesai, lalu klik tombol **Mulai Generate & Upload** lagi.*"
+                ),
+                color=THEME_PROGRESS,
+                timestamp=datetime.datetime.now()
+            )
+            busy_embed.set_footer(text="Superfood Tech • JobLock Protection")
+            await interaction.edit_original_response(embed=busy_embed, view=self)
+            return
+
+        # Ambil nama brand owner terpilih
+        owner_brand = ""
+        for m in self.owners_meta:
+            if m["owner"].strip().lower() == str(self.selected_owner).strip().lower():
+                owner_brand = m.get("brand", "")
+                break
+        brand_info = f" • *{owner_brand}*" if owner_brand else ""
+
         # Build initial progress embed
         progress_embed = discord.Embed(
             title="⚙️ MEMPROSES GENERASI DATA OUTLET...",
-            description=f"Sedang memproses owner **{self.selected_owner}**...\n\n{create_progress_bar(10)}",
+            description=f"Sedang memproses owner **{self.selected_owner}**{brand_info}...\n\n{create_progress_bar(10)}",
             color=THEME_PROGRESS,
             timestamp=datetime.datetime.now()
         )
@@ -383,7 +457,9 @@ class ControlPanelView(discord.ui.View):
                 upload=True,
                 source="vercel",
                 live_scrape=True,
-                progress_callback=cb
+                progress_callback=cb,
+                lock_timeout=0,
+                requested_by=self.user.display_name
             )
 
         try:
@@ -409,9 +485,16 @@ class ControlPanelView(discord.ui.View):
                 color=THEME_SUCCESS,
                 timestamp=datetime.datetime.now()
             )
-            success_embed.set_thumbnail(url=SUCCESS_THUMBNAIL)
-            
-            success_embed.add_field(name="👤 Nama Pemilik", value=f"**{result['owner']}**", inline=True)
+            owner_brand = ""
+            for m in self.owners_meta:
+                if m["owner"].strip().lower() == str(result.get("owner", "")).strip().lower():
+                    owner_brand = m.get("brand", "")
+                    break
+            owner_val = f"**{result['owner']}**"
+            if owner_brand:
+                owner_val += f"\n🏷️ `{owner_brand}`"
+
+            success_embed.add_field(name="👤 Nama Pemilik", value=owner_val, inline=True)
             success_embed.add_field(name="📊 Total Outlet", value=f"**{result['total']} Outlet**", inline=True)
             success_embed.add_field(name="📄 File Excel", value=f"`{result['filename']}`\n`✓ 2 Tab (Listing & Listing 2)`", inline=False)
             success_embed.add_field(name="📁 Link Folder Google Drive", value=f"[👉 Buka Folder `{result['owner']}` di Google Drive]({folder_url})", inline=False)
@@ -439,6 +522,28 @@ class ControlPanelView(discord.ui.View):
                     except Exception as e:
                         print(f"⚠️ Gagal update success embed (percobaan {attempt+1}): {e}")
                         await asyncio.sleep(1.5)
+
+        elif result.get("error") == "LOCKED":
+            lock_info = result.get("lock_info", {})
+            busy_owner = lock_info.get("owner", "Owner lain")
+            busy_user = lock_info.get("user", "Pengguna lain")
+            busy_embed = discord.Embed(
+                title="⏳ SISTEM SEDANG SIBUK",
+                description=(
+                    f"Pipeline saat ini sedang memproses data untuk **{busy_owner}** "
+                    f"(diminta oleh **{busy_user}**).\n\n"
+                    "🛡️ **JobLock Aktif:** Silakan tunggu beberapa saat dan klik tombol Generate kembali."
+                ),
+                color=THEME_PROGRESS,
+                timestamp=datetime.datetime.now()
+            )
+            busy_embed.set_footer(text="Superfood Tech • JobLock Protection")
+
+            for item in self.children:
+                item.disabled = False
+
+            async with edit_lock:
+                await interaction.edit_original_response(embed=busy_embed, view=self)
 
         else:
             error_embed = discord.Embed(
@@ -542,6 +647,17 @@ async def status_slash(interaction: discord.Interaction):
         inline=True
     )
     embed.add_field(name="🔥 Owner Terbaru", value=f"**{newest}** (`{newest_ts}`)", inline=False)
+    
+    # Status Pipeline dengan JobLock
+    if is_pipeline_locked():
+        lock_info = get_lock_info()
+        busy_owner = lock_info.get("owner", "Owner lain")
+        busy_user = lock_info.get("user", "Pengguna lain")
+        pipeline_status = f"🟡 **Sedang Memproses:** `{busy_owner}` (oleh `{busy_user}`)"
+    else:
+        pipeline_status = "🟢 **Idle:** Siap digunakan"
+    embed.add_field(name="⚙️ Status Pipeline", value=pipeline_status, inline=False)
+
     embed.add_field(name="📁 Root Google Drive", value=f"[Buka Google Drive]({ROOT_DRIVE_URL})", inline=False)
     
     embed.set_footer(text="Gunakan /generate untuk mengekspor data.")

@@ -739,11 +739,7 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--ignore-gpu-blocklist",
-            "--enable-gpu-rasterization",
-            "--enable-zero-copy",
-            "--enable-hardware-overlays",
-            "--enable-features=VaapiVideoDecoder,CanvasOopRasterization"
+            "--disable-gpu",
         ]
     )
 

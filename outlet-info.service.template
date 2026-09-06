@@ -1,0 +1,31 @@
+[Unit]
+Description=Outlet Info Automation & Discord Bot Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{GROUP}}
+WorkingDirectory={{APP_DIR}}
+ExecStart={{PYTHON_PATH}} {{APP_DIR}}/discord_bot.py
+Restart=always
+RestartSec=5s
+
+# Low-RAM & Headless production settings
+Environment=PYTHONUNBUFFERED=1
+Environment=HEADLESS=true
+EnvironmentFile=-{{APP_DIR}}/.env
+
+# Output logging to systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=outlet-info
+
+# OOM Protection: restart cleanly if memory threshold exceeded
+MemoryMax=1800M
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target
+

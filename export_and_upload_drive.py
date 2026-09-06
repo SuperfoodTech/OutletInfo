@@ -34,6 +34,8 @@ import openpyxl
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 
+from pipeline_lock import JobLock, is_pipeline_locked, get_lock_info, Timeout
+
 # ─── Konfigurasi Direktori & URL ───────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 GOFOOD_DIR = BASE_DIR / "GOFOOD"
@@ -340,7 +342,13 @@ def save_owner_workbook(owner_df, file_path, headers):
     Dibuat langsung dengan mengkloning template 'YYYY-MM-DD HH_MM Nama Pemilik.xlsx'
     sehingga pewarnaan kolom header (Merah, Pink, Hijau, Oranye), font Arial,
     dan lebar kolom asli terjaga 100% identik.
+    Menggunakan penulisan atomic via folder .tmp agar terhindar dari file korup jika terjadi crash.
     """
+    target_path = Path(file_path)
+    tmp_dir = target_path.parent / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file_path = tmp_dir / f"tmp_{os.getpid()}_{target_path.name}"
+
     if TEMPLATE_PATH.exists():
         wb = openpyxl.load_workbook(str(TEMPLATE_PATH))
         if "Listing" in wb.sheetnames:
@@ -367,7 +375,8 @@ def save_owner_workbook(owner_df, file_path, headers):
     write_data_to_sheet(ws1, owner_df, headers)
     write_data_to_sheet(ws2, owner_df, headers)
     
-    wb.save(file_path)
+    wb.save(str(tmp_file_path))
+    os.replace(str(tmp_file_path), str(target_path))
 
 
 def upload_file_to_drive(file_path, owner_name, app_script_url):
@@ -480,8 +489,19 @@ def get_owners_with_metadata(source="vercel"):
             latest_mtime = os.path.getmtime(latest_file)
             latest_ts_str = datetime.datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M")
 
+        # Ambil nama brand / outlet
+        brands = []
+        for col in ["Nama Brand", "Nama Outlet", "Brand"]:
+            if col in o_df.columns:
+                unique_brands = [str(b).strip() for b in o_df[col].dropna().unique() if str(b).strip() and str(b).strip().lower() not in ("nan", "none", "")]
+                if unique_brands:
+                    brands = unique_brands
+                    break
+        brand_name = ", ".join(brands) if brands else ""
+
         results.append({
             "owner": owner_str,
+            "brand": brand_name,
             "total": len(o_df),
             "gofood": go_n,
             "grab": gr_n,
@@ -654,151 +674,170 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
             send_log(76, f"⚠️ [ShopeeFood] Exception scraper: {e}")
 
 
-def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source="vercel", live_scrape=True, progress_callback=None):
+def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source="vercel", live_scrape=True, progress_callback=None, lock_timeout=0, requested_by="System"):
     """
     Pipeline pembuatan file per-owner dan upload Drive dengan progress callback.
     Menggunakan Vercel Sheet sebagai sumber utama dan memperkaya data dengan hasil live scraping.
+    Dilindungi oleh JobLock untuk mencegah tabrakan proses / race conditions.
     
     aplikator: 'all' | 'gofood' | 'grab' | 'shopee'
     source: 'vercel' (default) | 'master'
     live_scrape: True (default) menjalankan scraping live | False (kompilasi cache saja)
     progress_callback: function(percent: int, log_line: str)
+    lock_timeout: int (detik untuk menunggu lock, 0 = fail-fast)
+    requested_by: str (nama user / caller)
     """
     def log(pct, msg):
         if progress_callback:
             progress_callback(pct, msg)
         print(f"[{pct:>3}%] {msg}")
 
-    log(10, "Inisialisasi direktori dan template 37 kolom...")
-    headers = get_template_headers()
-    OUTPUT_OWNERS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # 1. LIVE SCRAPING (Jika diaktifkan dan bukan mode __ALL__)
-    if live_scrape and owner_name != "__ALL__":
-        log(12, f"Menjalankan penarikan live data toko untuk '{owner_name}'...")
-        run_live_scraping_for_owner(owner_name, aplikator=aplikator, progress_cb=progress_callback)
-
-    log(78, f"Membaca data sumber ({source.upper()}) untuk aplikator: {aplikator.upper()}...")
-    if source == "vercel":
-        src_df = load_vercel_data()
-    else:
-        dfs = []
-        if aplikator in ("all", "gofood"):
-            df_go = load_gofood_data()
-            if not df_go.empty:
-                dfs.append(df_go)
-        if aplikator in ("all", "grab"):
-            df_grab = load_grab_data()
-            if not df_grab.empty:
-                dfs.append(df_grab)
-        if aplikator in ("all", "shopee"):
-            df_shopee = load_shopee_data()
-            if not df_shopee.empty:
-                dfs.append(df_shopee)
-        src_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
-    if src_df.empty:
-        log(100, "❌ Data sumber kosong!")
-        return {"success": False, "error": "Data sumber kosong"}
-
-    log(80, f"Memfilter data untuk Owner: '{owner_name}'...")
-    if owner_name == "__ALL__":
-        owner_df = src_df.copy()
-    else:
-        owner_df = src_df[src_df["Nama Pemilik"].astype(str).str.strip().str.lower() == owner_name.strip().lower()].copy()
-
-    if owner_df.empty:
-        log(100, f"⚠️ Tidak ditemukan data untuk owner '{owner_name}'.")
-        return {"success": False, "error": f"Owner '{owner_name}' tidak ditemukan dalam data"}
-
-    # Filter aplikator
-    if aplikator == "gofood":
-        owner_df = owner_df[owner_df["Aplikator"] == "GoFood"]
-    elif aplikator == "grab":
-        owner_df = owner_df[owner_df["Aplikator"] == "GrabFood"]
-    elif aplikator == "shopee":
-        owner_df = owner_df[owner_df["Aplikator"] == "ShopeeFood"]
-
-    if owner_df.empty:
-        log(100, f"⚠️ Tidak ada outlet {aplikator.upper()} untuk owner '{owner_name}'.")
-        return {"success": False, "error": f"Tidak ada outlet {aplikator} untuk owner {owner_name}"}
-
-    # Enrich data dari hasil scraping jika tersedia (Bank, Rekening, Store ID, Alamat)
-    log(82, "Menggabungkan hasil penarikan data toko (Store ID, Alamat, Bank)...")
     try:
-        df_go = load_gofood_data()
-        df_gr = load_grab_data()
-        df_sh = load_shopee_data()
-        scraped_list = [d for d in [df_go, df_gr, df_sh] if not d.empty]
-        scraped_all = pd.concat(scraped_list, ignore_index=True) if scraped_list else pd.DataFrame()
+        with JobLock(timeout=lock_timeout, task_info={"owner": owner_name, "user": requested_by, "aplikator": aplikator, "source": source}):
+            log(10, "Inisialisasi direktori dan template 37 kolom...")
+            headers = get_template_headers()
+            OUTPUT_OWNERS_DIR.mkdir(parents=True, exist_ok=True)
 
-        scraped_owner = pd.DataFrame()
-        if not scraped_all.empty and "Nama Pemilik" in scraped_all.columns:
-            scraped_owner = scraped_all[scraped_all["Nama Pemilik"].astype(str).str.strip().str.lower() == owner_name.strip().lower()]
+            # 1. LIVE SCRAPING (Jika diaktifkan dan bukan mode __ALL__)
+            if live_scrape and owner_name != "__ALL__":
+                log(12, f"Menjalankan penarikan live data toko untuk '{owner_name}'...")
+                run_live_scraping_for_owner(owner_name, aplikator=aplikator, progress_cb=progress_callback)
 
-        final_rows = []
-        for app in owner_df["Aplikator"].dropna().unique():
-            app_vercel_rows = owner_df[owner_df["Aplikator"] == app]
-            app_scraped_rows = scraped_owner[scraped_owner["Aplikator"] == app] if not scraped_owner.empty and "Aplikator" in scraped_owner.columns else pd.DataFrame()
-
-            if not app_scraped_rows.empty:
-                v_first = app_vercel_rows.iloc[0]
-                nama_outlet_val = str(v_first.get("Nama Outlet") or "").strip()
-                for _, s_row in app_scraped_rows.iterrows():
-                    row_dict = s_row.to_dict()
-                    # Sesuai instruksi user: untuk kolom brand ambil dari kolom Nama Outlet saja
-                    if nama_outlet_val:
-                        row_dict["Nama Outlet"] = nama_outlet_val
-                        row_dict["Nama Brand"] = nama_outlet_val
-                    for col in ["Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
-                                "Nama Portal.1", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
-                                "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
-                                "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
-                                "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff", "BD", "Status Internal"]:
-                        if col in v_first and pd.notna(v_first[col]) and str(v_first[col]).strip() != "":
-                            if col not in row_dict or pd.isna(row_dict.get(col)) or str(row_dict.get(col)).strip() == "":
-                                row_dict[col] = v_first[col]
-                    final_rows.append(row_dict)
+            log(78, f"Membaca data sumber ({source.upper()}) untuk aplikator: {aplikator.upper()}...")
+            if source == "vercel":
+                src_df = load_vercel_data()
             else:
-                for _, v_row in app_vercel_rows.iterrows():
-                    v_dict = v_row.to_dict()
-                    if "Nama Outlet" in v_dict and pd.notna(v_dict["Nama Outlet"]):
-                        v_dict["Nama Brand"] = str(v_dict["Nama Outlet"]).strip()
-                    final_rows.append(v_dict)
+                dfs = []
+                if aplikator in ("all", "gofood"):
+                    df_go = load_gofood_data()
+                    if not df_go.empty:
+                        dfs.append(df_go)
+                if aplikator in ("all", "grab"):
+                    df_grab = load_grab_data()
+                    if not df_grab.empty:
+                        dfs.append(df_grab)
+                if aplikator in ("all", "shopee"):
+                    df_shopee = load_shopee_data()
+                    if not df_shopee.empty:
+                        dfs.append(df_shopee)
+                src_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
-        if final_rows:
-            owner_df = pd.DataFrame(final_rows)
-            if "Nama Outlet" in owner_df.columns:
-                owner_df["Nama Brand"] = owner_df["Nama Outlet"].astype(str).str.strip()
-    except Exception as e:
-        print(f"⚠️ Info enrich scraped: {e}")
+            if src_df.empty:
+                log(100, "❌ Data sumber kosong!")
+                return {"success": False, "error": "Data sumber kosong"}
 
-    go_n = len(owner_df[owner_df["Aplikator"] == "GoFood"]) if "Aplikator" in owner_df.columns else 0
-    gr_n = len(owner_df[owner_df["Aplikator"] == "GrabFood"]) if "Aplikator" in owner_df.columns else 0
-    sh_n = len(owner_df[owner_df["Aplikator"] == "ShopeeFood"]) if "Aplikator" in owner_df.columns else 0
+            log(80, f"Memfilter data untuk Owner: '{owner_name}'...")
+            if owner_name == "__ALL__":
+                owner_df = src_df.copy()
+            else:
+                owner_df = src_df[src_df["Nama Pemilik"].astype(str).str.strip().str.lower() == owner_name.strip().lower()].copy()
 
-    log(85, f"Ditemukan {len(owner_df)} outlet (GoFood: {go_n}, Grab: {gr_n}, Shopee: {sh_n}).")
+            if owner_df.empty:
+                log(100, f"⚠️ Tidak ditemukan data untuk owner '{owner_name}'.")
+                return {"success": False, "error": f"Owner '{owner_name}' tidak ditemukan dalam data"}
 
-    log(80, "Menyusun file Excel dengan 2 Tab Identik ('Listing' & 'Listing 2')...")
-    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
-    clean_owner = "".join(c for c in owner_name if c.isalnum() or c in " ._-").strip()
-    filename = f"{timestamp_str} {clean_owner}.xlsx"
-    file_path = OUTPUT_OWNERS_DIR / filename
+            # Filter aplikator
+            if aplikator == "gofood":
+                owner_df = owner_df[owner_df["Aplikator"] == "GoFood"]
+            elif aplikator == "grab":
+                owner_df = owner_df[owner_df["Aplikator"] == "GrabFood"]
+            elif aplikator == "shopee":
+                owner_df = owner_df[owner_df["Aplikator"] == "ShopeeFood"]
 
-    save_owner_workbook(owner_df, str(file_path), headers)
-    log(85, f"File lokal berhasil dibuat: {filename}")
+            if owner_df.empty:
+                log(100, f"⚠️ Tidak ada outlet {aplikator.upper()} untuk owner '{owner_name}'.")
+                return {"success": False, "error": f"Tidak ada outlet {aplikator} untuk owner {owner_name}"}
 
-    drive_res = {}
-    if upload:
-        log(90, f"Mengunggah ke folder Google Drive: [{clean_owner}]...")
-        ok, res = upload_file_to_drive(str(file_path), clean_owner, APP_SCRIPT_URL)
-        if ok:
-            drive_res = res
-            log(100, f"✅ Sukses terunggah ke Google Drive!")
-        else:
-            log(100, f"⚠️ Gagal upload ke Drive: {res.get('error', 'Unknown')}")
+            # Enrich data dari hasil scraping jika tersedia (Bank, Rekening, Store ID, Alamat)
+            log(82, "Menggabungkan hasil penarikan data toko (Store ID, Alamat, Bank)...")
+            try:
+                df_go = load_gofood_data()
+                df_gr = load_grab_data()
+                df_sh = load_shopee_data()
+                scraped_list = [d for d in [df_go, df_gr, df_sh] if not d.empty]
+                scraped_all = pd.concat(scraped_list, ignore_index=True) if scraped_list else pd.DataFrame()
+
+                scraped_owner = pd.DataFrame()
+                if not scraped_all.empty and "Nama Pemilik" in scraped_all.columns:
+                    scraped_owner = scraped_all[scraped_all["Nama Pemilik"].astype(str).str.strip().str.lower() == owner_name.strip().lower()]
+
+                final_rows = []
+                for app in owner_df["Aplikator"].dropna().unique():
+                    app_vercel_rows = owner_df[owner_df["Aplikator"] == app]
+                    app_scraped_rows = scraped_owner[scraped_owner["Aplikator"] == app] if not scraped_owner.empty and "Aplikator" in scraped_owner.columns else pd.DataFrame()
+
+                    if not app_scraped_rows.empty:
+                        v_first = app_vercel_rows.iloc[0]
+                        nama_outlet_val = str(v_first.get("Nama Outlet") or "").strip()
+                        for _, s_row in app_scraped_rows.iterrows():
+                            row_dict = s_row.to_dict()
+                            # Sesuai instruksi user: untuk kolom brand ambil dari kolom Nama Outlet saja
+                            if nama_outlet_val:
+                                row_dict["Nama Outlet"] = nama_outlet_val
+                                row_dict["Nama Brand"] = nama_outlet_val
+                            for col in ["Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
+                                        "Nama Portal.1", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
+                                        "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
+                                        "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
+                                        "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff", "BD", "Status Internal"]:
+                                if col in v_first and pd.notna(v_first[col]) and str(v_first[col]).strip() != "":
+                                    if col not in row_dict or pd.isna(row_dict.get(col)) or str(row_dict.get(col)).strip() == "":
+                                        row_dict[col] = v_first[col]
+                            final_rows.append(row_dict)
+                    else:
+                        for _, v_row in app_vercel_rows.iterrows():
+                            v_dict = v_row.to_dict()
+                            if "Nama Outlet" in v_dict and pd.notna(v_dict["Nama Outlet"]):
+                                v_dict["Nama Brand"] = str(v_dict["Nama Outlet"]).strip()
+                            final_rows.append(v_dict)
+
+                if final_rows:
+                    owner_df = pd.DataFrame(final_rows)
+                    if "Nama Outlet" in owner_df.columns:
+                        owner_df["Nama Brand"] = owner_df["Nama Outlet"].astype(str).str.strip()
+            except Exception as e:
+                print(f"⚠️ Info enrich scraped: {e}")
+
+            go_n = len(owner_df[owner_df["Aplikator"] == "GoFood"]) if "Aplikator" in owner_df.columns else 0
+            gr_n = len(owner_df[owner_df["Aplikator"] == "GrabFood"]) if "Aplikator" in owner_df.columns else 0
+            sh_n = len(owner_df[owner_df["Aplikator"] == "ShopeeFood"]) if "Aplikator" in owner_df.columns else 0
+
+            log(85, f"Ditemukan {len(owner_df)} outlet (GoFood: {go_n}, Grab: {gr_n}, Shopee: {sh_n}).")
+
+            log(80, "Menyusun file Excel dengan 2 Tab Identik ('Listing' & 'Listing 2')...")
+            timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
+            clean_owner = "".join(c for c in owner_name if c.isalnum() or c in " ._-").strip()
+            filename = f"{timestamp_str} {clean_owner}.xlsx"
+            file_path = OUTPUT_OWNERS_DIR / filename
+
+            save_owner_workbook(owner_df, str(file_path), headers)
+            log(85, f"File lokal berhasil dibuat: {filename}")
+
+            drive_res = {}
+            if upload:
+                log(90, f"Mengunggah ke folder Google Drive: [{clean_owner}]...")
+                ok, res = upload_file_to_drive(str(file_path), clean_owner, APP_SCRIPT_URL)
+                if ok:
+                    drive_res = res
+                    log(100, f"✅ Sukses terunggah ke Google Drive!")
+                else:
+                    log(100, f"⚠️ Gagal upload ke Drive: {res.get('error', 'Unknown')}")
+                    return {
+                        "success": False,
+                        "owner": owner_name,
+                        "filename": filename,
+                        "filepath": str(file_path),
+                        "total": len(owner_df),
+                        "gofood": go_n,
+                        "grab": gr_n,
+                        "shopee": sh_n,
+                        "error": res.get("error")
+                    }
+            else:
+                log(100, "✅ Selesai (Mode Lokal Saja).")
+
             return {
-                "success": False,
+                "success": True,
                 "owner": owner_name,
                 "filename": filename,
                 "filepath": str(file_path),
@@ -806,121 +845,127 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                 "gofood": go_n,
                 "grab": gr_n,
                 "shopee": sh_n,
-                "error": res.get("error")
+                "folder_url": drive_res.get("folderUrl") or "https://drive.google.com/drive/u/0/folders/19VIrypPcBmNNbjDLGS7kxp_yIdBBwXjB",
+                "file_url": drive_res.get("fileUrl", "")
             }
-    else:
-        log(100, "✅ Selesai (Mode Lokal Saja).")
-
-    return {
-        "success": True,
-        "owner": owner_name,
-        "filename": filename,
-        "filepath": str(file_path),
-        "total": len(owner_df),
-        "gofood": go_n,
-        "grab": gr_n,
-        "shopee": sh_n,
-        "folder_url": drive_res.get("folderUrl") or "https://drive.google.com/drive/u/0/folders/19VIrypPcBmNNbjDLGS7kxp_yIdBBwXjB",
-        "file_url": drive_res.get("fileUrl", "")
-    }
+    except Timeout:
+        info = get_lock_info()
+        busy_owner = info.get("owner", "Owner lain")
+        busy_user = info.get("user", "Pengguna lain")
+        msg = f"Pipeline sedang dikunci oleh proses lain (Owner: {busy_owner}, oleh: {busy_user})"
+        log(100, f"⚠️ {msg}")
+        return {
+            "success": False,
+            "error": "LOCKED",
+            "lock_info": info,
+            "message": msg
+        }
 
 
-def process_and_combine(owner_filter=None, upload=False):
+def process_and_combine(owner_filter=None, upload=False, lock_timeout=0):
     """Proses utama penggabungan per-owner dan upload ke Google Drive."""
-    print("=" * 65)
-    print("🚀 PENGGABUNGAN DATA OUTLET PER-OWNER (GOFOOD, GRAB, SHOPEE)")
-    print("=" * 65)
+    try:
+        with JobLock(timeout=lock_timeout, task_info={"task": "process_and_combine", "owner_filter": owner_filter or "__ALL__", "user": "CLI"}):
+            print("=" * 65)
+            print("🚀 PENGGABUNGAN DATA OUTLET PER-OWNER (GOFOOD, GRAB, SHOPEE)")
+            print("=" * 65)
 
-    headers = get_template_headers()
-    OUTPUT_OWNERS_DIR.mkdir(parents=True, exist_ok=True)
+            headers = get_template_headers()
+            OUTPUT_OWNERS_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("\n[*] Membaca data master...")
-    df_go = load_gofood_data()
-    df_grab = load_grab_data()
-    df_shopee = load_shopee_data()
+            print("\n[*] Membaca data master...")
+            df_go = load_gofood_data()
+            df_grab = load_grab_data()
+            df_shopee = load_shopee_data()
 
-    print(f"    - GoFood outlets   : {len(df_go)} baris")
-    print(f"    - GrabFood outlets : {len(df_grab)} baris")
-    print(f"    - ShopeeFood outlets: {len(df_shopee)} baris")
+            print(f"    - GoFood outlets   : {len(df_go)} baris")
+            print(f"    - GrabFood outlets : {len(df_grab)} baris")
+            print(f"    - ShopeeFood outlets: {len(df_shopee)} baris")
 
-    dfs = [df for df in [df_go, df_grab, df_shopee] if not df.empty]
-    if not dfs:
-        print("\n❌ Tidak ada data outlet yang ditemukan.")
+            dfs = [df for df in [df_go, df_grab, df_shopee] if not df.empty]
+            if not dfs:
+                print("\n❌ Tidak ada data outlet yang ditemukan.")
+                return
+
+            # Gabungkan data seluruh platform
+            combined_df = pd.concat(dfs, ignore_index=True)
+            
+            # Filter baris yang memiliki Nama Pemilik
+            if "Nama Pemilik" not in combined_df.columns:
+                print("❌ Kolom 'Nama Pemilik' tidak ditemukan dalam data.")
+                return
+
+            combined_df = combined_df[combined_df["Nama Pemilik"].notna()]
+            combined_df = combined_df[combined_df["Nama Pemilik"].astype(str).str.strip() != ""]
+
+            all_owners = sorted(combined_df["Nama Pemilik"].unique(), key=lambda x: str(x).lower())
+            print(f"\n[✓] Ditemukan {len(all_owners)} unique owner lintas platform.")
+
+            # Filter owner jika ditentukan
+            if owner_filter:
+                owner_filter_lower = owner_filter.strip().lower()
+                filtered = [o for o in all_owners if owner_filter_lower in str(o).lower()]
+                if not filtered:
+                    print(f"⚠️ Tidak ditemukan owner dengan kata kunci: '{owner_filter}'")
+                    print("Daftar owner yang ada:")
+                    for o in all_owners[:20]:
+                        print(f"  - {o}")
+                    if len(all_owners) > 20:
+                        print(f"  ... dan {len(all_owners) - 20} lainnya.")
+                    return
+                all_owners = filtered
+                print(f"[*] Memproses {len(all_owners)} owner yang cocok dengan filter '{owner_filter}'.")
+
+            timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
+            success_count = 0
+            upload_count = 0
+
+            print("\n" + "─" * 65)
+            for idx, owner in enumerate(all_owners, 1):
+                owner_str = str(owner).strip()
+                clean_owner = "".join(c for c in owner_str if c.isalnum() or c in " ._-").strip()
+                filename = f"{timestamp_str} {clean_owner}.xlsx"
+                file_path = OUTPUT_OWNERS_DIR / filename
+
+                owner_df = combined_df[combined_df["Nama Pemilik"] == owner]
+                # Deduplikasi per Store ID jika ada duplikat dalam aplikator yang sama
+                if "Store ID" in owner_df.columns and "Aplikator" in owner_df.columns:
+                    owner_df = owner_df.drop_duplicates(subset=["Aplikator", "Store ID"], keep="first")
+                if "Nama Outlet" in owner_df.columns:
+                    owner_df["Nama Brand"] = owner_df["Nama Outlet"].astype(str).str.strip()
+
+                go_count = len(owner_df[owner_df["Aplikator"] == "GoFood"])
+                grab_count = len(owner_df[owner_df["Aplikator"] == "GrabFood"])
+                shopee_count = len(owner_df[owner_df["Aplikator"] == "ShopeeFood"])
+
+                print(f"\n[{idx}/{len(all_owners)}] 👤 Owner: {owner_str}")
+                print(f"     📊 Total Outlet: {len(owner_df)} (GoFood: {go_count}, Grab: {grab_count}, Shopee: {shopee_count})")
+
+                # Simpan file dengan 2 tab 100% identik
+                save_owner_workbook(owner_df, str(file_path), headers)
+                print(f"     💾 Disimpan: {file_path.name} (Tab 'Listing' & 'Listing 2')")
+                success_count += 1
+
+                # Upload ke Google Drive jika diaktifkan
+                if upload:
+                    ok, _ = upload_file_to_drive(str(file_path), owner_str, APP_SCRIPT_URL)
+                    if ok:
+                        upload_count += 1
+
+            print("\n" + "=" * 65)
+            print("🎉 PROSES SELESAI")
+            print(f"   • Total file dibuat lokal: {success_count} file di output_owners/")
+            if upload:
+                print(f"   • Total berhasil diunggah ke Google Drive: {upload_count}/{success_count}")
+            else:
+                print("   • Mode Lokal: File belum diunggah ke Google Drive (gunakan flag --upload untuk mengunggah).")
+            print("=" * 65)
+    except Timeout:
+        info = get_lock_info()
+        print(f"\n⚠️ Tidak dapat menjalankan proses: Pipeline sedang dikunci oleh proses lain.")
+        print(f"   Sedang memproses: {info.get('owner', 'Tidak diketahui')} (oleh {info.get('user', 'Unknown')}, PID: {info.get('pid', '-')})")
+        print("   Harap tunggu hingga proses tersebut selesai.")
         return
-
-    # Gabungkan data seluruh platform
-    combined_df = pd.concat(dfs, ignore_index=True)
-    
-    # Filter baris yang memiliki Nama Pemilik
-    if "Nama Pemilik" not in combined_df.columns:
-        print("❌ Kolom 'Nama Pemilik' tidak ditemukan dalam data.")
-        return
-
-    combined_df = combined_df[combined_df["Nama Pemilik"].notna()]
-    combined_df = combined_df[combined_df["Nama Pemilik"].astype(str).str.strip() != ""]
-
-    all_owners = sorted(combined_df["Nama Pemilik"].unique(), key=lambda x: str(x).lower())
-    print(f"\n[✓] Ditemukan {len(all_owners)} unique owner lintas platform.")
-
-    # Filter owner jika ditentukan
-    if owner_filter:
-        owner_filter_lower = owner_filter.strip().lower()
-        filtered = [o for o in all_owners if owner_filter_lower in str(o).lower()]
-        if not filtered:
-            print(f"⚠️ Tidak ditemukan owner dengan kata kunci: '{owner_filter}'")
-            print("Daftar owner yang ada:")
-            for o in all_owners[:20]:
-                print(f"  - {o}")
-            if len(all_owners) > 20:
-                print(f"  ... dan {len(all_owners) - 20} lainnya.")
-            return
-        all_owners = filtered
-        print(f"[*] Memproses {len(all_owners)} owner yang cocok dengan filter '{owner_filter}'.")
-
-    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
-    success_count = 0
-    upload_count = 0
-
-    print("\n" + "─" * 65)
-    for idx, owner in enumerate(all_owners, 1):
-        owner_str = str(owner).strip()
-        clean_owner = "".join(c for c in owner_str if c.isalnum() or c in " ._-").strip()
-        filename = f"{timestamp_str} {clean_owner}.xlsx"
-        file_path = OUTPUT_OWNERS_DIR / filename
-
-        owner_df = combined_df[combined_df["Nama Pemilik"] == owner]
-        # Deduplikasi per Store ID jika ada duplikat dalam aplikator yang sama
-        if "Store ID" in owner_df.columns and "Aplikator" in owner_df.columns:
-            owner_df = owner_df.drop_duplicates(subset=["Aplikator", "Store ID"], keep="first")
-        if "Nama Outlet" in owner_df.columns:
-            owner_df["Nama Brand"] = owner_df["Nama Outlet"].astype(str).str.strip()
-
-        go_count = len(owner_df[owner_df["Aplikator"] == "GoFood"])
-        grab_count = len(owner_df[owner_df["Aplikator"] == "GrabFood"])
-        shopee_count = len(owner_df[owner_df["Aplikator"] == "ShopeeFood"])
-
-        print(f"\n[{idx}/{len(all_owners)}] 👤 Owner: {owner_str}")
-        print(f"     📊 Total Outlet: {len(owner_df)} (GoFood: {go_count}, Grab: {grab_count}, Shopee: {shopee_count})")
-
-        # Simpan file dengan 2 tab 100% identik
-        save_owner_workbook(owner_df, str(file_path), headers)
-        print(f"     💾 Disimpan: {file_path.name} (Tab 'Listing' & 'Listing 2')")
-        success_count += 1
-
-        # Upload ke Google Drive jika diaktifkan
-        if upload:
-            ok, _ = upload_file_to_drive(str(file_path), owner_str, APP_SCRIPT_URL)
-            if ok:
-                upload_count += 1
-
-    print("\n" + "=" * 65)
-    print("🎉 PROSES SELESAI")
-    print(f"   • Total file dibuat lokal: {success_count} file di output_owners/")
-    if upload:
-        print(f"   • Total berhasil diunggah ke Google Drive: {upload_count}/{success_count}")
-    else:
-        print("   • Mode Lokal: File belum diunggah ke Google Drive (gunakan flag --upload untuk mengunggah).")
-    print("=" * 65)
 
 
 def list_owners():
@@ -960,6 +1005,7 @@ def main():
     parser.add_argument("--upload", action="store_true", help="Unggah file yang dibuat ke Google Drive")
     parser.add_argument("--local-only", action="store_true", help="Hanya buat file Excel lokal di output_owners/ tanpa upload")
     parser.add_argument("--list-owners", action="store_true", help="Tampilkan daftar semua owner dan jumlah outlet")
+    parser.add_argument("--lock-timeout", type=int, default=0, help="Timeout menunggu JobLock (detik, default: 0 = fail-fast)")
 
     args = parser.parse_args()
 
@@ -968,7 +1014,7 @@ def main():
         return
 
     do_upload = args.upload and not args.local_only
-    process_and_combine(owner_filter=args.owner, upload=do_upload)
+    process_and_combine(owner_filter=args.owner, upload=do_upload, lock_timeout=args.lock_timeout)
 
 
 if __name__ == "__main__":

@@ -1177,6 +1177,8 @@ def run_manual_mode():
                 '--disable-blink-features=AutomationControlled',
                 '--disable-infobars',
                 '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
             ]
         )
         context = browser.new_context(
@@ -1434,6 +1436,8 @@ def main():
                 '--disable-blink-features=AutomationControlled',
                 '--disable-infobars',
                 '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
             ]
         )
         

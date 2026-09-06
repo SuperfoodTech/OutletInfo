@@ -59,6 +59,9 @@ patch_*.py
 *.png
 *.zip
 .~lock.*
+.pipeline.lock
+.pipeline.info.json
+output_owners/.tmp/
 *_backup.py
 *.log
 
