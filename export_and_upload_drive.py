@@ -109,14 +109,15 @@ def load_gofood_data():
         except Exception:
             pass
 
-    # 3. Fallback dari GOFOOD/output/*.xlsx
-    for f in glob.glob(str(GOFOOD_DIR / "output" / "*.xlsx")):
-        try:
-            df_part = pd.read_excel(f, sheet_name="Listing")
-            df_part["Aplikator"] = "GoFood"
-            records.append(df_part)
-        except Exception:
-            pass
+    # 3. Fallback dari GOFOOD/output/*.xlsx (hanya jika master & cache kosong)
+    if not records:
+        for f in glob.glob(str(GOFOOD_DIR / "output" / "*.xlsx")):
+            try:
+                df_part = pd.read_excel(f, sheet_name="Listing")
+                df_part["Aplikator"] = "GoFood"
+                records.append(df_part)
+            except Exception:
+                pass
 
     if records:
         combined = pd.concat(records, ignore_index=True)
@@ -159,14 +160,15 @@ def load_grab_data():
         except Exception:
             pass
 
-    # 3. Fallback dari GRAB/output/*.xlsx
-    for f in glob.glob(str(GRAB_DIR / "output" / "*.xlsx")):
-        try:
-            df_part = pd.read_excel(f, sheet_name="Listing")
-            df_part["Aplikator"] = "GrabFood"
-            records.append(df_part)
-        except Exception:
-            pass
+    # 3. Fallback dari GRAB/output/*.xlsx (hanya jika master & cache kosong)
+    if not records:
+        for f in glob.glob(str(GRAB_DIR / "output" / "*.xlsx")):
+            try:
+                df_part = pd.read_excel(f, sheet_name="Listing")
+                df_part["Aplikator"] = "GrabFood"
+                records.append(df_part)
+            except Exception:
+                pass
 
     if records:
         combined = pd.concat(records, ignore_index=True)
@@ -299,14 +301,21 @@ def write_data_to_sheet(ws, df, headers):
         for c_idx, h in enumerate(headers, 1):
             if not h:
                 continue
-            val = r.get(h)
-            if val is None or pd.isna(val) or str(val).strip() == '':
-                # Cari via aliases
-                aliases = col_aliases.get(h, [])
-                for alias in aliases:
-                    if alias in r and pd.notna(r.get(alias)) and str(r.get(alias)).strip() != '':
-                        val = r.get(alias)
-                        break
+
+            # Sesuai instruksi: untuk kolom brand ambil dari kolom Nama Outlet saja
+            if h in ('Nama Brand', 'Brand'):
+                val = r.get('Nama Outlet')
+                if val is None or pd.isna(val) or str(val).strip() == '':
+                    val = r.get('Nama Brand') or r.get('Brand')
+            else:
+                val = r.get(h)
+                if val is None or pd.isna(val) or str(val).strip() == '':
+                    # Cari via aliases
+                    aliases = col_aliases.get(h, [])
+                    for alias in aliases:
+                        if alias in r and pd.notna(r.get(alias)) and str(r.get(alias)).strip() != '':
+                            val = r.get(alias)
+                            break
 
             val_str = str(val).strip() if pd.notna(val) and val is not None else ''
             if val_str.lower() in ('nan', 'none'):
@@ -490,12 +499,65 @@ def get_owners_with_metadata(source="vercel"):
     return results
 
 
+def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150):
+    """Menjalankan subprocess dengan streaming output real-time dan batas waktu yang aman agar tidak stuck."""
+    import subprocess
+    import time
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    try:
+        p = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(cwd),
+            env=env,
+            bufsize=1
+        )
+        start_time = time.time()
+        while True:
+            # Cegah proses menggantung melebihi timeout
+            if time.time() - start_time > timeout_sec:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+                on_log(f"⏱️ Melewati batas waktu ({timeout_sec}s). Melanjutkan ke tahap berikutnya...")
+                break
+            
+            line = p.stdout.readline()
+            if not line:
+                if p.poll() is not None:
+                    break
+                time.sleep(0.05)
+                continue
+                
+            line_s = line.strip()
+            if not line_s:
+                continue
+                
+            # Abaikan garis pembatas dekoratif
+            if line_s.startswith("===") or line_s.startswith("---") or line_s.startswith("───"):
+                continue
+
+            # Tampilkan pesan jika ada indikator status atau cocok kata kunci
+            is_status = any(line_s.startswith(p) for p in ("[*]", "[✓]", "🚀", "🌐", "➡️", "📧", "⏳", "✅", "⚠️", "❌", "🎉", "⚡", "🏢", "📍"))
+            has_kw = any(k.lower() in line_s.lower() for k in keywords)
+            if is_status or has_kw:
+                on_log(line_s[:85])
+                
+        p.poll()
+        return p.returncode or 0
+    except Exception as e:
+        on_log(f"⚠️ Error proses: {e}")
+        return -1
+
+
 def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
     """
     Menjalankan live scraping GoFood, Grab, dan Shopee untuk owner spesifik.
-    Menggunakan subprocess agar proses terisolasi dan log dapat di-stream real-time.
+    Menggunakan subprocess terisolasi dengan streaming log dan timeout aman.
     """
-    import subprocess
     clean_owner = owner_name.strip()
     python_bin = sys.executable
 
@@ -507,65 +569,53 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
     # 1. LIVE SCRAPING GOFOOD
     if aplikator in ("all", "gofood"):
         send_log(15, f"🚀 [GoFood] Memulai penarikan live untuk '{clean_owner}'...")
+        headless_go = os.getenv("HEADLESS_GOFOOD", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
         cmd = [
             python_bin,
+            "-u",
             str(GOFOOD_DIR / "gofood_scraper.py"),
             "--vercel",
             "--owner", clean_owner,
-            "--headless"
+            "--headless" if headless_go else "--gui",
+            "--no-master",
+            "--no-upload"
         ]
-        try:
-            p = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=str(GOFOOD_DIR),
-                bufsize=1
-            )
-            for line in iter(p.stdout.readline, ''):
-                line_s = line.strip()
-                if line_s:
-                    if any(k in line_s for k in ("Store ID", "Berhasil", "Portal", "Login", "Owner", "Restricted", "Memproses", "OTP", "Filter")):
-                        send_log(25, f"[GoFood] {line_s[:85]}")
-            p.wait()
-            if p.returncode == 0:
-                send_log(35, f"✅ [GoFood] Selesai memproses '{clean_owner}'.")
-            else:
-                send_log(35, f"⚠️ [GoFood] Selesai dengan status {p.returncode}.")
-        except Exception as e:
-            send_log(35, f"⚠️ [GoFood] Gagal menjalankan scraper: {e}")
+        rc = run_subprocess_stream(
+            cmd,
+            cwd=GOFOOD_DIR,
+            keywords=("Store ID", "Berhasil", "Portal", "Login", "Owner", "Restricted", "Memproses", "OTP", "Filter", "Gagal"),
+            on_log=lambda m: send_log(25, f"[GoFood] {m}"),
+            timeout_sec=160
+        )
+        if rc == 0:
+            send_log(35, f"✅ [GoFood] Selesai memproses '{clean_owner}'.")
+        else:
+            send_log(35, f"⚠️ [GoFood] Selesai dengan kode status {rc}.")
 
     # 2. LIVE SCRAPING GRABFOOD
     if aplikator in ("all", "grab"):
         send_log(40, f"🚀 [GrabFood] Memulai penarikan live untuk '{clean_owner}'...")
+        headless_grab = os.getenv("HEADLESS_GRAB", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
         cmd = [
             python_bin,
+            "-u",
             str(GRAB_DIR / "grab_merchant_scraper.py"),
             "--vercel",
-            "--owner", clean_owner
+            "--owner", clean_owner,
+            "--headless" if headless_grab else "--gui",
+            "--no-master"
         ]
-        try:
-            p = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=str(GRAB_DIR),
-                bufsize=1
-            )
-            for line in iter(p.stdout.readline, ''):
-                line_s = line.strip()
-                if line_s:
-                    if any(k in line_s for k in ("Group ID", "Berhasil", "Target", "Portal", "Login", "Store", "Bank", "Owner", "Filter")):
-                        send_log(55, f"[Grab] {line_s[:85]}")
-            p.wait()
-            if p.returncode == 0:
-                send_log(65, f"✅ [GrabFood] Selesai memproses '{clean_owner}'.")
-            else:
-                send_log(65, f"⚠️ [GrabFood] Selesai dengan status {p.returncode}.")
-        except Exception as e:
-            send_log(65, f"⚠️ [GrabFood] Gagal menjalankan scraper: {e}")
+        rc = run_subprocess_stream(
+            cmd,
+            cwd=GRAB_DIR,
+            keywords=("Group ID", "Berhasil", "Target", "Portal", "Login", "Store", "Bank", "Owner", "Filter", "Gagal"),
+            on_log=lambda m: send_log(55, f"[Grab] {m}"),
+            timeout_sec=120
+        )
+        if rc == 0:
+            send_log(65, f"✅ [GrabFood] Selesai memproses '{clean_owner}'.")
+        else:
+            send_log(65, f"⚠️ [GrabFood] Selesai dengan kode status {rc}.")
 
     # 3. LIVE SCRAPING SHOPEEFOOD
     if aplikator in ("all", "shopee"):
@@ -582,24 +632,21 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
             
             if merchant_name:
                 send_log(70, f"[ShopeeFood] Menarik data toko '{merchant_name}'...")
+                headless_shopee = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
                 cmd = [
                     python_bin,
+                    "-u",
                     str(SHOPEE_DIR / "pull_outlet_info.py"),
-                    "--merchant-name", merchant_name
+                    "--merchant-name", merchant_name,
+                    "--headless" if headless_shopee else "--gui"
                 ]
-                p = subprocess.Popen(
+                run_subprocess_stream(
                     cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    cwd=str(SHOPEE_DIR),
-                    bufsize=1
+                    cwd=SHOPEE_DIR,
+                    keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai"),
+                    on_log=lambda m: send_log(74, f"[Shopee] {m}"),
+                    timeout_sec=120
                 )
-                for line in iter(p.stdout.readline, ''):
-                    line_s = line.strip()
-                    if line_s and any(k in line_s for k in ("Store", "Berhasil", "Merchant", "Data", "Sukses")):
-                        send_log(74, f"[Shopee] {line_s[:85]}")
-                p.wait()
                 send_log(76, f"✅ [ShopeeFood] Selesai memproses '{merchant_name}'.")
             else:
                 send_log(76, f"ℹ️ [ShopeeFood] Tidak ditemukan nama merchant Shopee untuk '{clean_owner}'.")
@@ -696,8 +743,13 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
 
             if not app_scraped_rows.empty:
                 v_first = app_vercel_rows.iloc[0]
+                nama_outlet_val = str(v_first.get("Nama Outlet") or "").strip()
                 for _, s_row in app_scraped_rows.iterrows():
                     row_dict = s_row.to_dict()
+                    # Sesuai instruksi user: untuk kolom brand ambil dari kolom Nama Outlet saja
+                    if nama_outlet_val:
+                        row_dict["Nama Outlet"] = nama_outlet_val
+                        row_dict["Nama Brand"] = nama_outlet_val
                     for col in ["Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
                                 "Nama Portal.1", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
                                 "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
@@ -709,10 +761,15 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                     final_rows.append(row_dict)
             else:
                 for _, v_row in app_vercel_rows.iterrows():
-                    final_rows.append(v_row.to_dict())
+                    v_dict = v_row.to_dict()
+                    if "Nama Outlet" in v_dict and pd.notna(v_dict["Nama Outlet"]):
+                        v_dict["Nama Brand"] = str(v_dict["Nama Outlet"]).strip()
+                    final_rows.append(v_dict)
 
         if final_rows:
             owner_df = pd.DataFrame(final_rows)
+            if "Nama Outlet" in owner_df.columns:
+                owner_df["Nama Brand"] = owner_df["Nama Outlet"].astype(str).str.strip()
     except Exception as e:
         print(f"⚠️ Info enrich scraped: {e}")
 
@@ -852,6 +909,8 @@ def process_and_combine(owner_filter=None, upload=False):
         # Deduplikasi per Store ID jika ada duplikat dalam aplikator yang sama
         if "Store ID" in owner_df.columns and "Aplikator" in owner_df.columns:
             owner_df = owner_df.drop_duplicates(subset=["Aplikator", "Store ID"], keep="first")
+        if "Nama Outlet" in owner_df.columns:
+            owner_df["Nama Brand"] = owner_df["Nama Outlet"].astype(str).str.strip()
 
         go_count = len(owner_df[owner_df["Aplikator"] == "GoFood"])
         grab_count = len(owner_df[owner_df["Aplikator"] == "GrabFood"])

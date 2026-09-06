@@ -692,17 +692,30 @@ def get_all_cookies_dict(driver) -> dict:
     return {c["name"]: c["value"] for c in driver.get_cookies()}
 
 def _trigger_and_extract_tokens(driver) -> tuple:
-    log.debug("  🔄 Triggering fresh token issuance...")
+    # 1. Cek langsung dari cookies browser yang sedang aktif
+    tob_token, entity_id = extract_tokens_from_driver(driver)
+    if tob_token:
+        return tob_token, entity_id
+
+    log.debug("  🔄 Triggering fresh token issuance via settings page...")
     try:
-        try: driver.delete_cookie("shopee_tob_token")
-        except: pass
         driver.get(TOKEN_TRIGGER_PAGE)
         for _ in range(10):
             tob_token, entity_id = extract_tokens_from_driver(driver)
             if tob_token: return tob_token, entity_id
             time.sleep(1)
     except: pass
-    return extract_tokens_from_driver(driver)
+
+    # 2. Fallback jika driver cookies tidak ter-expose: gunakan session cache tersimpan
+    if not tob_token:
+        saved = load_session()
+        if saved and saved.get("shopee_tob_token"):
+            tob_token = saved["shopee_tob_token"]
+            if not entity_id:
+                entity_id = saved.get("shopee_tob_entity_id")
+            log.info("📂 [TOKEN] Menggunakan token aktif dari session file cache.")
+
+    return tob_token, entity_id
 
 
 # ── Driver Initialization ──────────────────────────────────────────────────────
@@ -1458,7 +1471,9 @@ def return_to_selector(driver) -> bool:
             pass
         return True
 
-def get_session(username=None, password=None, phone=None, headless=True, close_browser=True, target_name=None, interactive=True) -> dict | None:
+def get_session(username=None, password=None, phone=None, headless=None, close_browser=True, target_name=None, interactive=True) -> dict | None:
+    if headless is None:
+        headless = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
     for attempt in range(3):
         log.info(f"🌐 [BROWSER] Launching (headless={headless}, attempt={attempt+1}/3)...")
         driver = _init_driver(headless=headless)
@@ -1644,9 +1659,11 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
             active_id = None
             active_name = "Unknown Merchant"
             try:
+                driver_token = next((c["value"] for c in driver.get_cookies() if c["name"] == "shopee_tob_token"), "")
                 api_js = """
+                var token_arg = arguments[0];
                 var done = arguments[arguments.length - 1];
-                let token = document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
+                let token = token_arg || document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
                 fetch('https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo', {
                     method: 'POST',
                     headers: {
@@ -1663,7 +1680,7 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                 .catch(() => done(null));
                 """
                 driver.set_script_timeout(10)
-                user_data = driver.execute_async_script(api_js)
+                user_data = driver.execute_async_script(api_js, driver_token)
                 if user_data:
                     active_id = str(user_data.get("merchantId") or "")
                     active_name = user_data.get("merchantName") or "Unknown Merchant"
@@ -1709,17 +1726,11 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                 else:
                     log.info(f"✅ [MERCHANT] Already as target: {active_name}")
             else:
-                is_invalid_name = (
-                    not active_name or
-                    active_name.lower().strip() == "unknown merchant" or
-                    active_name.lower().strip() == "admin"
-                )
-                if active_id and active_id != "None" and not is_invalid_name:
+                if active_id and active_id != "None":
                     log.info(f"📍 [MERCHANT] Current: {active_name} (ID: {active_id})")
-                    do_switch = False
                 else:
-                    log.info(f"📍 [MERCHANT] Invalid active merchant detected (Name: {active_name}, ID: {active_id}). Redirecting/Switching...")
-                    do_switch = True
+                    log.info(f"📍 [MERCHANT] Active on dashboard as: {active_name} (ID: {active_id or 'default'})")
+                do_switch = False
 
             if do_switch:
                 if target_name:
