@@ -247,11 +247,18 @@ INVENTORY_URL = f"{BASE_URL}/food/inventory"
 
 
 async def human_type(locator, text):
-    """Mengetik teks dengan jeda acak antar karakter agar terlihat seperti manusia."""
-    await locator.click()
-    for char in text:
-        await locator.press(char)
-        await asyncio.sleep(random.uniform(0.07, 0.18))
+    """Mengetik teks dengan jeda acak antar karakter agar terlihat seperti manusia, dengan jaminan fill()."""
+    try:
+        await locator.click()
+        await locator.fill("")
+        for char in text:
+            await locator.press(char)
+            await asyncio.sleep(random.uniform(0.04, 0.10))
+        val = await locator.input_value()
+        if val != text:
+            await locator.fill(text)
+    except Exception:
+        await locator.fill(text)
 
 
 async def handle_welcome_back_or_continue(page):
@@ -336,16 +343,24 @@ async def perform_login(page, username, password):
             if not await password_input.is_visible():
                 # ── Step 2: Isi username ───────────────────────────────────────
                 logger.info(f"Mengetik username: {username}")
-                username_input = page.locator('input[type="text"], input[name="username"], input[name="email"]').first
+                username_input = page.locator('input[type="text"], input[name="username"], input[name="email"], input[placeholder*="username" i]').first
                 await username_input.wait_for(state="visible", timeout=15000)
                 await asyncio.sleep(random.uniform(0.3, 0.7))
                 await human_type(username_input, username)
+                # Pastikan input value terisi
+                val = await username_input.input_value()
+                if val != username:
+                    await username_input.fill(username)
                 await asyncio.sleep(random.uniform(0.5, 1.0))
 
                 # ── Step 3: Klik Continue (pertama) ───────────────────────────
                 logger.info("Klik Continue (username)...")
                 continue_btn = page.get_by_role("button", name="Continue")
                 await continue_btn.wait_for(state="visible", timeout=10000)
+                for _ in range(20):
+                    if await continue_btn.is_enabled():
+                        break
+                    await asyncio.sleep(0.5)
                 await asyncio.sleep(random.uniform(0.3, 0.6))
                 await continue_btn.click()
 
@@ -357,12 +372,19 @@ async def perform_login(page, username, password):
         # ── Step 5: Isi password ──────────────────────────────────────
         logger.info("Mengetik password...")
         await human_type(password_input, password)
+        val_pass = await password_input.input_value()
+        if val_pass != password:
+            await password_input.fill(password)
         await asyncio.sleep(random.uniform(0.5, 1.0))
 
         # ── Step 6: Klik Continue (kedua) ─────────────────────────────
         logger.info("Klik Continue (password)...")
         continue_btn2 = page.get_by_role("button", name="Continue")
         await continue_btn2.wait_for(state="visible", timeout=10000)
+        for _ in range(20):
+            if await continue_btn2.is_enabled():
+                break
+            await asyncio.sleep(0.5)
         await asyncio.sleep(random.uniform(0.2, 0.5))
         await continue_btn2.click()
 
