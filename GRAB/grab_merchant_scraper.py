@@ -47,6 +47,7 @@ GOOGLE_SHEET_AGENCY_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tL
 GOOGLE_SHEET_VB_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRYSUnKOqk29LCktTxdb0wPLbWMbRaWRP3eC_UA4AwYod1FW6zDMhtLMC5ghIvot2B8upCDfBsn-TCP/pub?gid=978201567&single=true&output=csv"
 GOOGLE_SHEET_VERCEL_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTprbPPf_J5gAVL3PYeHbbdl5ZXQvb17HY2lJGPI2xg13Ly3AGT8eYHLYmU_m1NdtkBVg-qUGv1BoEE/pub?output=csv"
 LOCAL_CRED_CSV = os.path.join(BASE_DIR, 'A. Credential (Outlet & Access)  - Unique Portal Gr (1).csv')
+DEFAULT_GRAB_PASSWORD = os.getenv("DEFAULT_GRAB_PASSWORD", "Master@123")
 
 
 def get_safe_cache_filename(portal_name):
@@ -197,7 +198,11 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
             username = row[col_user].strip() if col_user != -1 and col_user < len(row) else ""
             password = row[col_pass].strip() if col_pass != -1 and col_pass < len(row) else ""
             
-            if username and username != "-" and password and password != "-":
+            if username and username != "-":
+                if not password or password == "-" or password.lower() in ("nan", "none"):
+                    password = DEFAULT_GRAB_PASSWORD
+                    logger.info(f"ℹ️ Password kosong di data sheet untuk '{username}', menggunakan default: {DEFAULT_GRAB_PASSWORD}")
+
                 safe_cache_name = get_safe_cache_filename(portal)
                 safe_portal_name = "".join([c for c in portal if c.isalpha() or c.isdigit() or c == ' ']).rstrip()
                 cache_file = os.path.join(CACHE_DIR, safe_cache_name)
@@ -279,8 +284,37 @@ async def handle_welcome_back_or_continue(page):
     return False
 
 
-async def perform_login(page, username, password):
-    logger.info(f"Navigating to Grab Merchant login page for {username}...")
+async def check_for_login_error(page):
+    """Mendeteksi pesan error login pada form Grab (misal salah password / akun terkunci)."""
+    error_selectors = [
+        '.dui-form-item-explain-error',
+        '.ant-form-item-explain-error',
+        '[role="alert"]',
+        'div[class*="error" i]:not([class*="hidden"]):not([style*="display: none"])',
+        'p[class*="error" i]',
+        'span[class*="error" i]',
+        '[class*="feedback" i]',
+        '[class*="helperText" i]',
+        'div[class*="notification" i]',
+        'div[class*="alert" i]'
+    ]
+    for sel in error_selectors:
+        try:
+            locs = page.locator(sel)
+            count = await locs.count()
+            for idx in range(min(count, 4)):
+                loc = locs.nth(idx)
+                if await loc.is_visible():
+                    txt = (await loc.text_content() or "").strip()
+                    if txt and len(txt) > 3 and not any(ign in txt.lower() for ign in ["cookie", "privacy", "terms"]):
+                        return txt
+        except Exception:
+            pass
+    return None
+
+
+async def perform_login(page, username, password, is_retry_fallback=False):
+    logger.info(f"Navigating to Grab Merchant login page for {username} (fallback={is_retry_fallback})...")
     try:
         # 1. Cek dulu apakah halaman saat ini sudah menampilkan tombol Continue (Welcome back)
         if await handle_welcome_back_or_continue(page):
@@ -350,36 +384,80 @@ async def perform_login(page, username, password):
         await real_password_input.wait_for(state="visible", timeout=20000)
         await asyncio.sleep(0.5)
 
-        # ── Step 4: Isi password ─────────────────────────────────────────────
-        logger.info("Mengetik password...")
-        await human_type(real_password_input, password)
-        if await real_password_input.input_value() != password:
-            await real_password_input.fill(password)
-        await asyncio.sleep(0.5)
-
-        # ── Step 5: Klik Continue (password) ─────────────────────────────────
-        logger.info("Klik Continue (password)...")
-        continue_btn2 = page.get_by_role("button", name="Continue")
-        await continue_btn2.wait_for(state="visible", timeout=10000)
-        for _ in range(20):
-            if await continue_btn2.is_enabled():
-                break
+        # ── Step 4 & 5 & 6: Pengisian Password, Submit, dan Deteksi Respon / Error ──
+        async def submit_password_and_wait(pwd, is_default=False):
+            label_pass = f"default ({DEFAULT_GRAB_PASSWORD})" if is_default else "sheet Vercel"
+            logger.info(f"Mengetik password ({label_pass})...")
+            await real_password_input.click()
+            await real_password_input.fill("")
+            await human_type(real_password_input, pwd)
+            if await real_password_input.input_value() != pwd:
+                await real_password_input.fill(pwd)
             await asyncio.sleep(0.5)
-        await asyncio.sleep(0.3)
-        await continue_btn2.click()
 
-        # ── Step 6: Tunggu redirect ke dashboard / keluar dari login ──────────
-        logger.info("Menunggu redirect ke dashboard...")
-        for _ in range(30):
-            await page.wait_for_timeout(1000)
-            cur = page.url.lower()
-            if "login" not in cur and "saved-accounts" not in cur and "merchant.grab.com" in cur:
+            logger.info("Klik Continue (password)...")
+            continue_btn2 = page.get_by_role("button", name="Continue")
+            await continue_btn2.wait_for(state="visible", timeout=10000)
+            for _ in range(20):
+                if await continue_btn2.is_enabled():
+                    break
+                await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
+            await continue_btn2.click()
+
+            # Tunggu redirect atau deteksi error
+            logger.info(f"Menunggu respons login ({label_pass})...")
+            for _ in range(15):
+                await page.wait_for_timeout(1000)
+                cur = page.url.lower()
+                if "login" not in cur and "saved-accounts" not in cur and "merchant.grab.com" in cur:
+                    logger.info(f"[✓] Login berhasil untuk {username} → {page.url}")
+                    return True, None
+
+                # Deteksi pesan error pada UI
+                err_text = await check_for_login_error(page)
+                if err_text:
+                    return False, err_text
+
+            if "login" not in page.url.lower() and "saved-accounts" not in page.url.lower():
                 logger.info(f"[✓] Login berhasil untuk {username} → {page.url}")
-                return True
+                return True, None
 
-        if "login" not in page.url.lower() and "saved-accounts" not in page.url.lower():
-            logger.info(f"[✓] Login berhasil untuk {username} → {page.url}")
+            return False, "Timeout: Halaman tidak me-redirect setelah submit password"
+
+        # Attempt 1: Coba password yang diberikan (dari sheet)
+        success, err_msg = await submit_password_and_wait(password, is_default=(password == DEFAULT_GRAB_PASSWORD))
+        if success:
             return True
+
+        # Jika gagal dan password awal BUKAN DEFAULT_GRAB_PASSWORD, otomatis fallback ke DEFAULT_GRAB_PASSWORD!
+        if password != DEFAULT_GRAB_PASSWORD and not is_retry_fallback:
+            logger.warning(f"❌ [Grab] Password dari sheet gagal untuk {username}: '{err_msg}'.")
+            logger.warning(f"🔄 [Grab] Mencoba fallback dengan password default: {DEFAULT_GRAB_PASSWORD}...")
+
+            # Jika form password masih ada di layar (kasus umum Grab saat password salah):
+            if await real_password_input.is_visible(timeout=3000):
+                success_fb, err_fb = await submit_password_and_wait(DEFAULT_GRAB_PASSWORD, is_default=True)
+                if success_fb:
+                    logger.info(f"✅ [Grab] Sukses login dengan password default ({DEFAULT_GRAB_PASSWORD}) untuk {username}!")
+                    return True
+                else:
+                    logger.error(f"❌ [Grab] Password default ({DEFAULT_GRAB_PASSWORD}) juga gagal untuk {username}: '{err_fb}'")
+            else:
+                # Jika halaman ter-reset, ulangi alur login penuh dengan DEFAULT_GRAB_PASSWORD
+                logger.info(f"Navigasi ulang login penuh untuk {username} dengan password default: {DEFAULT_GRAB_PASSWORD}...")
+                return await perform_login(page, username, DEFAULT_GRAB_PASSWORD, is_retry_fallback=True)
+        else:
+            logger.error(f"❌ [Grab] Login gagal untuk {username}: '{err_msg}'")
+
+        # Simpan screenshot untuk debug
+        screenshot_path = f"login_error_{username}.png"
+        try:
+            await page.screenshot(path=screenshot_path)
+            logger.info(f"Screenshot disimpan: {screenshot_path}")
+        except Exception:
+            pass
+        return False
 
     except Exception as e:
         logger.error(f"[✗] Login gagal untuk {username}: {e}")

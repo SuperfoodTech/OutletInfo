@@ -628,9 +628,9 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
         rc = run_subprocess_stream(
             cmd,
             cwd=GRAB_DIR,
-            keywords=("Group ID", "Berhasil", "Target", "Portal", "Login", "Store", "Bank", "Owner", "Filter", "Gagal"),
+            keywords=("Group ID", "Berhasil", "Target", "Portal", "Login", "Store", "Bank", "Owner", "Filter", "Gagal", "Password", "Salah", "Master@123", "fallback", "Sukses"),
             on_log=lambda m: send_log(55, f"[Grab] {m}"),
-            timeout_sec=120
+            timeout_sec=180
         )
         if rc == 0:
             send_log(65, f"✅ [GrabFood] Selesai memproses '{clean_owner}'.")
