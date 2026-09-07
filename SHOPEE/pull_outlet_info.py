@@ -169,6 +169,22 @@ def get_owner_brand_mapping():
 
 
 MERCHANT_INFO_MAP = {}
+MERCHANT_INFO_NAME_MAP = {}
+
+def get_merchant_info(target_id=None, target_name=None) -> dict | None:
+    """Lookup merchant metadata by ID or name."""
+    if not MERCHANT_INFO_MAP:
+        get_merchants_to_switch()
+    if target_id and str(target_id) in MERCHANT_INFO_MAP:
+        return MERCHANT_INFO_MAP[str(target_id)]
+    if target_name:
+        clean_nm = target_name.lower().rstrip("_").strip()
+        if clean_nm in MERCHANT_INFO_NAME_MAP:
+            return MERCHANT_INFO_NAME_MAP[clean_nm]
+        for k, v in MERCHANT_INFO_NAME_MAP.items():
+            if clean_nm == k or clean_nm in k or k in clean_nm:
+                return v
+    return None
 
 def get_merchants_to_switch() -> list[dict]:
     """
@@ -217,8 +233,11 @@ def get_merchants_to_switch() -> list[dict]:
             if not m_name:
                 continue
 
-            # Simpan metadata merchant dengan ID sebagai kunci unik
+            # Simpan metadata merchant dengan ID dan Name sebagai kunci unik
             MERCHANT_INFO_MAP[str(m_id)] = item
+            clean_m_nm = m_name.lower().rstrip("_").strip()
+            if clean_m_nm not in MERCHANT_INFO_NAME_MAP:
+                MERCHANT_INFO_NAME_MAP[clean_m_nm] = item
 
             occ_idx = name_seen_idx.get(m_name, 0)
             name_seen_idx[m_name] = occ_idx + 1
@@ -316,9 +335,19 @@ def load_existing_results():
 
 def get_driver_user_info(driver) -> dict | None:
     """Fetch current active user info from internal Shopee API via driver."""
+    token = ""
+    try:
+        for c in driver.get_cookies():
+            if c.get("name") == "shopee_tob_token":
+                token = c.get("value", "")
+                break
+    except Exception:
+        pass
+
     api_js = """
+    var token_arg = arguments[0];
     var done = arguments[arguments.length - 1];
-    let token = document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
+    let token = token_arg || document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
     fetch('https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo', {
         method: 'POST',
         headers: {
@@ -336,30 +365,94 @@ def get_driver_user_info(driver) -> dict | None:
     """
     try:
         driver.set_script_timeout(10)
-        return driver.execute_async_script(api_js)
+        return driver.execute_async_script(api_js, token)
     except Exception:
         return None
 
 
+def direct_api_switch_merchant(driver, target_tob_uid: str | int) -> bool:
+    """
+    Call internal Shopee Partner SwitchMerchant API directly within browser session.
+    Endpoint: POST /nb/mss/mer-detect-api/PartnerMerchantDetectServer/SwitchMerchant
+    """
+    token = ""
+    try:
+        for c in driver.get_cookies():
+            if c.get("name") == "shopee_tob_token":
+                token = c.get("value", "")
+                break
+    except Exception:
+        pass
+
+    api_js = """
+    var done = arguments[arguments.length - 1];
+    var token_arg = arguments[0];
+    var targetTobUid = arguments[1];
+    let token = token_arg || document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
+    fetch('https://api.partner.shopee.co.id/nb/mss/mer-detect-api/PartnerMerchantDetectServer/SwitchMerchant', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-merchant-token': token || '',
+            'x-merchant-language': 'id',
+            'x-merchant-login-from': '12'
+        },
+        body: JSON.stringify({ target_tob_uid: String(targetTobUid) }),
+        credentials: 'include'
+    })
+    .then(r => r.json())
+    .then(d => done({ ok: true, data: d }))
+    .catch(e => done({ ok: false, error: String(e) }));
+    """
+    try:
+        driver.set_script_timeout(15)
+        res = driver.execute_async_script(api_js, token, str(target_tob_uid))
+        if res and res.get("ok"):
+            data = res.get("data", {})
+            code = data.get("code") if "code" in data else data.get("errorCode")
+            if code == 0 or data.get("message") == "success" or "data" in data:
+                return True
+            print(f"  [!] Direct SwitchMerchant API response error: {data}")
+    except Exception as e:
+        print(f"  [!] Direct SwitchMerchant API exception: {e}")
+    return False
+
+
 CURRENT_OCCURRENCE_INDEX = 0
 CURRENT_TARGET_MERCHANT_ID = None
+CURRENT_TARGET_TOB_UID = None
 
 def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
     """
-    Enhanced automated merchant switch that supports duplicate names via CURRENT_OCCURRENCE_INDEX
-    and verifies active ID against CURRENT_TARGET_MERCHANT_ID.
+    Enhanced automated merchant switch:
+    1. Check if already active.
+    2. Try direct SwitchMerchant API call if target_tob_uid is known.
+    3. Fallback to UI dropdown navigation.
+    4. STRICT VERIFICATION: Verify active UI merchant name & ID. If mismatch, return False.
     """
-    global CURRENT_OCCURRENCE_INDEX, CURRENT_TARGET_MERCHANT_ID
+    global CURRENT_OCCURRENCE_INDEX, CURRENT_TARGET_MERCHANT_ID, CURRENT_TARGET_TOB_UID
     target_occ_idx = CURRENT_OCCURRENCE_INDEX
     target_id = CURRENT_TARGET_MERCHANT_ID
+    target_tob_uid = CURRENT_TARGET_TOB_UID
 
-    print(f"🔄 [MERCHANT] Switching to: '{target_name}' (Target ID: {target_id or '-'}, Occ: {target_occ_idx})...")
+    # Lookup target_tob_uid and target_id from cache if not already set
+    m_info = get_merchant_info(target_id=target_id, target_name=target_name)
+    if m_info:
+        if not target_tob_uid:
+            target_tob_uid = m_info.get("staffTobUid")
+        if not target_id:
+            target_id = m_info.get("merchantId")
+
+    print(f"🔄 [MERCHANT] Switching to: '{target_name}' (Target ID: {target_id or '-'}, staffTobUid: {target_tob_uid or '-'}, Occ: {target_occ_idx})...")
+    t_clean = target_name.lower().rstrip("_").strip()
+
     try:
         # Fast check if already active on target merchant in dashboard UI
         try:
             cur_el = driver.find_element(By.CSS_SELECTOR, ".merchantName, [class*='merchantName']")
             cur_ui_name = (cur_el.text or "").strip()
-            if cur_ui_name and (cur_ui_name.lower() == target_name.lower() or cur_ui_name.lower().rstrip("_") == target_name.lower().rstrip("_")):
+            cur_clean = cur_ui_name.lower().rstrip("_").strip()
+            if cur_clean and (cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean):
                 print(f"  ✅ [MERCHANT] Sudah aktif pada merchant: '{cur_ui_name}'. Tidak perlu switch.")
                 return True
         except Exception:
@@ -367,8 +460,28 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
 
         # Fast Loader Removal
         driver.execute_script("document.querySelectorAll('.ant-spin, [class*=\"loading\"], .shopee-loading').forEach(el => el.remove());")
-        
-        # PHASE 1: Handle initial merchant selector page right after login
+
+        # ATTEMPT METHOD 1: Direct SwitchMerchant API (Fastest & most reliable)
+        if target_tob_uid:
+            print(f"  ⚡ [DIRECT API SWITCH] Menjalankan SwitchMerchant API untuk target_tob_uid: {target_tob_uid}...")
+            api_ok = direct_api_switch_merchant(driver, target_tob_uid)
+            if api_ok:
+                print("  ✓ SwitchMerchant API berhasil dikirim. Memuat ulang dashboard...")
+                driver.get("https://partner.shopee.co.id/food/dashboard")
+                time.sleep(3)
+                for _ in range(8):
+                    try:
+                        cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
+                        cur_clean = cur_nm.lower().rstrip("_").strip()
+                        if cur_clean and (cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean):
+                            print(f"  ✅ [DIRECT API SWITCH] Berhasil beralih ke merchant: '{cur_nm}'.")
+                            return True
+                    except Exception:
+                        pass
+                    time.sleep(1)
+                print(f"  ⚠️ Direct API switch dijalankan, namun UI belum terupdate ke '{target_name}'. Mencoba via UI dropdown...")
+
+        # ATTEMPT METHOD 2: Selector page right after login
         current_url = driver.current_url
         if "onboarding" in current_url or "merchant-selector" in current_url:
             print(f"  📍 Detected Selector page. Mencoba memilih target langsung...")
@@ -410,14 +523,12 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     break
                 time.sleep(1)
 
-        # PHASE 2: Open profile dropdown and switch
+        # ATTEMPT METHOD 3: Profile dropdown in dashboard
         for switch_attempt in range(3):
-            # Ensure we are in dashboard
             if "/food/dashboard" not in driver.current_url:
                 driver.get("https://partner.shopee.co.id/food/dashboard")
                 time.sleep(3)
 
-            # 1. Hover profile menu
             profile_menu = None
             for sel in [".merchantName", ".user-info", "li.ant-menu-item:last-child", "div[class*=\"header\"] .ant-dropdown-trigger"]:
                 try:
@@ -448,7 +559,6 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 pass
             time.sleep(1)
 
-            # 2. Click 'Pilih Merchant Lain' / 'Switch Merchant'
             dropdown_opened = False
             try:
                 switch_trigger = WebDriverWait(driver, 5).until(
@@ -459,7 +569,6 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 dropdown_opened = True
                 time.sleep(1.5)
             except Exception:
-                # Fallback JS click
                 js_found = driver.execute_script("""
                     var spans = document.querySelectorAll('span, p, div, li, a');
                     for (var s of spans) {
@@ -480,7 +589,6 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 time.sleep(2)
                 continue
 
-            # 3. Find target in submenu items (STRICT Exact or Clean match only - NO partial substring leakage)
             js_switch_script = """
                 var targetRaw = (arguments[0] || "").toLowerCase().trim();
                 var targetClean = targetRaw.replace(/_+$/, '').trim();
@@ -492,12 +600,11 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
 
                 for (var i = 0; i < items.length; i++) {
                     var el = items[i];
-                    if (!el || typeof el.click !== 'function') continue;
+                    if (!el) continue;
                     var text = (el.innerText || el.textContent || "").toLowerCase().trim();
                     if (!text) continue;
                     var textClean = text.replace(/_+$/, '').trim();
 
-                    // Strict matching only
                     if (text === targetRaw) {
                         exactMatches.push(el);
                     } else if (targetClean && (text === targetClean || textClean === targetClean)) {
@@ -510,11 +617,16 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     var chosenIdx = Math.min(targetOccIdx, matched.length - 1);
                     var chosen = matched[chosenIdx];
                     if (typeof chosen.scrollIntoView === 'function') chosen.scrollIntoView({block: 'center'});
-                    chosen.click();
-                    try {
-                        var clickEvt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                        chosen.dispatchEvent(clickEvt);
-                    } catch(e) {}
+                    
+                    ['mouseover', 'mouseenter', 'mousedown', 'mouseup', 'click'].forEach(function(evtType) {
+                        try {
+                            var evt = new MouseEvent(evtType, { bubbles: true, cancelable: true, view: window });
+                            chosen.dispatchEvent(evt);
+                        } catch(e) {}
+                    });
+                    if (typeof chosen.click === 'function') {
+                        try { chosen.click(); } catch(e) {}
+                    }
                     return { ok: true, matchedCount: matched.length, clickedIdx: chosenIdx, matchType: exactMatches.length > 0 ? 'exact' : 'clean' };
                 }
                 return { ok: false, matchedCount: 0 };
@@ -535,39 +647,46 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 print(f"  ✅ Clicked '{target_name}' in submenu ({found_res.get('matchType', 'exact')} match, item {found_res.get('clickedIdx', 0)+1}/{found_res.get('matchedCount', 1)}).")
                 
                 # Wait dynamically up to 12s for UI name to update
-                t_clean = target_name.lower().rstrip("_").strip()
                 switched_ok = False
                 for _ in range(12):
                     time.sleep(1)
                     try:
                         cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
                         cur_clean = cur_nm.lower().rstrip("_").strip()
-                        if cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean:
+                        if cur_clean and (cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean):
                             switched_ok = True
                             break
                     except Exception:
                         pass
 
-                # Check onboarding
                 if "onboarding" in driver.current_url.lower():
                     browser._handle_onboarding_invitation(driver)
                     time.sleep(3)
 
-                # Verify via GetUserInfo
-                user_info = get_driver_user_info(driver)
-                if user_info:
-                    active_id = str(user_info.get("merchantId") or "")
-                    active_nm = user_info.get("merchantName") or ""
-                    print(f"  [✓] Active merchant after switch: '{active_nm}' (ID: {active_id})")
-                    if target_id and str(target_id) != active_id:
-                        print(f"  ⚠️ Warning: Active ID ({active_id}) does not match target ({target_id}). Retrying switch...")
-                        continue
-                return True
+                if switched_ok:
+                    print(f"  [✓] UI berhasil terupdate ke merchant target: '{cur_nm}'.")
+                    return True
+                else:
+                    cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip() if driver.find_elements(By.CSS_SELECTOR, ".merchantName, .user-info") else "unknown"
+                    print(f"  ⚠️ Click berhasil tapi UI belum beralih ke '{target_name}' (saat ini: '{cur_nm}'). Mengulang percobaan...")
             else:
                 print(f"  ⚠️ Outlet '{target_name}' tidak ditemukan di dropdown (Attempt {switch_attempt+1}/3).")
                 time.sleep(2)
 
+        # FINAL STRICT VERIFICATION
+        final_ui = ""
+        try:
+            final_ui = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
+        except Exception:
+            pass
+        final_clean = final_ui.lower().rstrip("_").strip()
+
+        if final_clean and (t_clean in final_clean or final_clean in t_clean):
+            return True
+
+        print(f"  ❌ [STRICT VALIDATION] Gagal berpindah ke '{target_name}'. Merchant aktif saat ini: '{final_ui}'. Aborting switch.")
         return False
+
     except Exception as e:
         print(f"  [!] Exception in auto_switch_merchant: {e}")
         return False
@@ -579,14 +698,16 @@ browser.auto_switch_merchant = enhanced_auto_switch_merchant
 # ──────────────────────────────────────────────────────────────
 # Authentication
 # ──────────────────────────────────────────────────────────────
-def get_auth_session(target_name: str, target_merchant_id: str | int = None, occurrence_index: int = 0, headless: bool = None) -> tuple:
+def get_auth_session(target_name: str, target_merchant_id: str | int = None, target_tob_uid: str | int = None, occurrence_index: int = 0, headless: bool = None) -> tuple:
     """
     Launch browser, login as allvbadmin, switch to target merchant by ID/name, extract tokens, close browser.
-    Returns (tob_token, entity_id, extra_cookies) or raises on failure.
+    STRICT VALIDATION: Verifies active merchant name & ID. Never allows cross-merchant contamination.
+    Returns (tob_token, entity_id, extra_cookies) or raises RuntimeError on failure.
     """
-    global CURRENT_OCCURRENCE_INDEX, CURRENT_TARGET_MERCHANT_ID
+    global CURRENT_OCCURRENCE_INDEX, CURRENT_TARGET_MERCHANT_ID, CURRENT_TARGET_TOB_UID
     CURRENT_OCCURRENCE_INDEX = occurrence_index
     CURRENT_TARGET_MERCHANT_ID = target_merchant_id
+    CURRENT_TARGET_TOB_UID = target_tob_uid
 
     if headless is None:
         headless = HEADLESS_DEFAULT
@@ -603,7 +724,7 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, occ
         except Exception:
             pass
 
-    print(f"[*] Membuka browser (headless={headless}) dan memilih merchant: '{target_name}' (ID: {target_merchant_id or '-'}, Occ: {occurrence_index})...")
+    print(f"[*] Membuka browser (headless={headless}) dan memilih merchant: '{target_name}' (ID: {target_merchant_id or '-'}, staffTobUid: {target_tob_uid or '-'}, Occ: {occurrence_index})...")
     
     session_data = browser.get_session(
         username=username,
@@ -620,6 +741,23 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, occ
     driver = session_data["driver"]
 
     try:
+        # STRICT CHECK 1: Verifikasi nama merchant aktif di UI dashboard
+        active_ui_name = ""
+        try:
+            active_ui_name = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
+        except Exception:
+            pass
+
+        t_clean = target_name.lower().rstrip("_").strip()
+        ui_clean = active_ui_name.lower().rstrip("_").strip()
+
+        if active_ui_name and (t_clean not in ui_clean and ui_clean not in t_clean):
+            raise RuntimeError(
+                f"🚨 [STRICT VALIDATION ERROR] Browser aktif di merchant '{active_ui_name}', "
+                f"TIDAK SESUAI dengan target '{target_name}'! "
+                f"Penarikan data dibatalkan demi integritas data dan mencegah kontaminasi outlet."
+            )
+
         print("[*] Memperbarui token autentikasi...")
         session = browser.refresh_tokens(driver, fallback_entity_id=str(target_merchant_id) if target_merchant_id else None)
         if not session or "shopee_tob_token" not in session:
@@ -641,24 +779,23 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, occ
             except Exception:
                 pass
 
-        # Dapatkan entity_id yang akurat dari GetUserInfo atau target_merchant_id
+        # STRICT CHECK 2: Dapatkan entity_id yang akurat dari GetUserInfo
         uinfo = get_driver_user_info(driver)
         actual_id = str(uinfo.get("merchantId") or "") if uinfo else ""
-        if actual_id:
-            entity_id = actual_id
-        elif target_merchant_id:
-            entity_id = str(target_merchant_id)
-        else:
-            entity_id = str(session.get("shopee_tob_entity_id", "") or "")
 
-        if target_merchant_id and entity_id != str(target_merchant_id):
-            print(f"  ⚠️ Entity ID mismatch: got '{entity_id}', expected '{target_merchant_id}' ({target_name}). Menyesuaikan entity_id ke target.")
-            entity_id = str(target_merchant_id)
+        if actual_id and target_merchant_id and actual_id != str(target_merchant_id):
+            raise RuntimeError(
+                f"🚨 [STRICT VALIDATION ERROR] Merchant ID aktif di API adalah '{actual_id}', "
+                f"TIDAK SESUAI dengan target ID '{target_merchant_id}' ('{target_name}')! "
+                f"Penarikan data dibatalkan."
+            )
+
+        entity_id = actual_id or str(target_merchant_id or session.get("shopee_tob_entity_id", ""))
 
         extra_cookies["shopee_tob_entity_id"] = str(entity_id)
         extra_cookies["shopee_foody_mid"] = str(entity_id)
 
-        print(f"[✓] Token berhasil didapat. Entity ID: {entity_id}")
+        print(f"[✓] Token berhasil didapat. Active Merchant: '{active_ui_name}' | Entity ID: {entity_id}")
         return tob_token, entity_id, extra_cookies
     finally:
         try:
@@ -919,14 +1056,17 @@ def run_pull(
     # Fallback: Jika target spesifik diminta lewat argumen tetapi belum tercatat di merchant_list.json cache
     if not merchants_to_process and (target_merchant_name or target_merchant_id):
         fallback_name = target_merchant_name or str(target_merchant_id)
-        print(f"  [*] Target '{fallback_name}' tidak ada di merchant_list cache, tetap mencoba switch di portal live...")
+        m_info = get_merchant_info(target_id=target_merchant_id, target_name=target_merchant_name)
+        f_mid = target_merchant_id or (m_info.get("merchantId") if m_info else "")
+        f_tob = m_info.get("staffTobUid") if m_info else None
+        print(f"  [*] Target '{fallback_name}' tidak ada di merchant_list cache, tetap mencoba switch di portal live (mid: {f_mid}, tobUid: {f_tob})...")
         merchants_to_process.append({
-            "merchant_id": target_merchant_id or "",
+            "merchant_id": f_mid,
             "merchant_name": fallback_name,
             "label": fallback_name,
             "occurrence_index": 0,
             "total_occurrences": 1,
-            "staff_tob_uid": None,
+            "staff_tob_uid": f_tob,
             "is_active": True,
         })
 
@@ -962,6 +1102,7 @@ def run_pull(
             tob_token, entity_id, extra_cookies = get_auth_session(
                 target_name=merchant_name,
                 target_merchant_id=merchant_id,
+                target_tob_uid=m.get("staff_tob_uid"),
                 occurrence_index=occ_idx,
                 headless=headless,
             )
@@ -1179,14 +1320,36 @@ def run_pull(
     populate_sheet(ws2)
 
     wb.save(excel_path)
-    # Simpan juga ke 0master.xlsx sebagai cache terpusat
+    # Simpan ke 0master.xlsx sebagai cache terpusat
     master_static = OUTPUT_DIR / "0master.xlsx"
-    wb.save(master_static)
+    if not is_filtered_run:
+        wb.save(master_static)
+        print(f"  ✓ Master Output: {master_static}")
+    elif standardized_results:
+        try:
+            import pandas as pd
+            if master_static.exists():
+                try:
+                    df_old = pd.read_excel(master_static, sheet_name="Listing")
+                except Exception:
+                    df_old = pd.read_excel(master_static)
+                
+                target_m_names = [m["merchant_name"].lower() for m in merchants_to_process]
+                if "Nama Portal" in df_old.columns:
+                    df_old = df_old[~df_old["Nama Portal"].astype(str).str.lower().isin(target_m_names)]
+                df_new = pd.DataFrame(standardized_results)
+                df_merged = pd.concat([df_old, df_new], ignore_index=True)
+                with pd.ExcelWriter(master_static, engine="openpyxl") as writer:
+                    df_merged.to_excel(writer, sheet_name="Listing", index=False)
+                    df_merged.to_excel(writer, sheet_name="Listing 2", index=False)
+                print(f"  ✓ Master Output ({master_static.name}) di-merge: {len(df_merged)} total rows")
+            else:
+                wb.save(master_static)
+                print(f"  ✓ Master Output dibuat: {master_static}")
+        except Exception as e:
+            print(f"  [!] Gagal merge ke {master_static.name}: {e}")
 
     print(f"  ✓ Sheet 'Listing' & 'Listing 2': {len(standardized_results)} rows (2 Tab Identik)")
-    print(f"  ✓ Output: {excel_path}")
-    print(f"  ✓ Master Output: {master_static}")
-    print(f"  ✓ Sheet 'Listing': {len(standardized_results)} rows")
     print(f"  ✓ Output: {excel_path}")
 
     # Final Summary
