@@ -643,31 +643,34 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
         try:
             v_df = load_vercel_data()
             o_shopee = v_df[(v_df["Nama Pemilik"].astype(str).str.strip().str.lower() == clean_owner.lower()) & (v_df["Aplikator"] == "ShopeeFood")]
-            merchant_name = ""
+            merchant_names = []
             if not o_shopee.empty:
-                for col in ["Merchant Name", "Nama Portal", "Nama Brand", "Nama Akses"]:
-                    if col in o_shopee.columns and pd.notna(o_shopee.iloc[0].get(col)) and str(o_shopee.iloc[0].get(col)).strip():
-                        merchant_name = str(o_shopee.iloc[0].get(col)).strip()
-                        break
+                for _, r in o_shopee.iterrows():
+                    for col in ["Merchant Name", "Nama Portal", "Nama Brand", "Nama Akses"]:
+                        val = str(r.get(col) or "").strip()
+                        if val and val.lower() not in ("nan", "none", "-") and val not in merchant_names:
+                            merchant_names.append(val)
+                            break
             
-            if merchant_name:
-                send_log(70, f"[ShopeeFood] Menarik data toko '{merchant_name}'...")
+            if merchant_names:
                 headless_shopee = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
-                cmd = [
-                    python_bin,
-                    "-u",
-                    str(SHOPEE_DIR / "pull_outlet_info.py"),
-                    "--merchant-name", merchant_name,
-                    "--headless" if headless_shopee else "--gui"
-                ]
-                run_subprocess_stream(
-                    cmd,
-                    cwd=SHOPEE_DIR,
-                    keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai"),
-                    on_log=lambda m: send_log(74, f"[Shopee] {m}"),
-                    timeout_sec=120
-                )
-                send_log(76, f"✅ [ShopeeFood] Selesai memproses '{merchant_name}'.")
+                for idx, merchant_name in enumerate(merchant_names, start=1):
+                    send_log(70, f"[ShopeeFood] Menarik data toko [{idx}/{len(merchant_names)}] '{merchant_name}'...")
+                    cmd = [
+                        python_bin,
+                        "-u",
+                        str(SHOPEE_DIR / "pull_outlet_info.py"),
+                        "--merchant-name", merchant_name,
+                        "--headless" if headless_shopee else "--gui"
+                    ]
+                    run_subprocess_stream(
+                        cmd,
+                        cwd=SHOPEE_DIR,
+                        keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai"),
+                        on_log=lambda m: send_log(74, f"[Shopee] {m}"),
+                        timeout_sec=180
+                    )
+                send_log(76, f"✅ [ShopeeFood] Selesai memproses {len(merchant_names)} merchant.")
             else:
                 send_log(76, f"ℹ️ [ShopeeFood] Tidak ditemukan nama merchant Shopee untuk '{clean_owner}'.")
         except Exception as e:
@@ -768,9 +771,22 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
 
                     if not app_scraped_rows.empty:
                         v_first = app_vercel_rows.iloc[0]
-                        nama_outlet_val = str(v_first.get("Nama Outlet") or "").strip()
                         for _, s_row in app_scraped_rows.iterrows():
                             row_dict = s_row.to_dict()
+                            s_portal = str(s_row.get("Nama Portal") or "").strip().lower()
+                            v_target = v_first
+                            for _, v_candidate in app_vercel_rows.iterrows():
+                                cand_keys = [
+                                    str(v_candidate.get("Merchant Name") or "").strip().lower(),
+                                    str(v_candidate.get("Nama Portal") or "").strip().lower(),
+                                    str(v_candidate.get("Nama Akses") or "").strip().lower(),
+                                    str(v_candidate.get("Nama Outlet") or "").strip().lower()
+                                ]
+                                if s_portal in cand_keys or any(k and k in s_portal for k in cand_keys if len(k) > 3):
+                                    v_target = v_candidate
+                                    break
+
+                            nama_outlet_val = str(v_target.get("Nama Outlet") or "").strip()
                             # Sesuai instruksi user: untuk kolom brand ambil dari kolom Nama Outlet saja
                             if nama_outlet_val:
                                 row_dict["Nama Outlet"] = nama_outlet_val
@@ -780,9 +796,9 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                                         "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
                                         "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
                                         "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff", "BD", "Status Internal"]:
-                                if col in v_first and pd.notna(v_first[col]) and str(v_first[col]).strip() != "":
+                                if col in v_target and pd.notna(v_target[col]) and str(v_target[col]).strip() != "":
                                     if col not in row_dict or pd.isna(row_dict.get(col)) or str(row_dict.get(col)).strip() == "":
-                                        row_dict[col] = v_first[col]
+                                        row_dict[col] = v_target[col]
                             final_rows.append(row_dict)
                     else:
                         for _, v_row in app_vercel_rows.iterrows():

@@ -636,20 +636,34 @@ def validate_session(tob_token: str, entity_id: str) -> bool:
 def extract_tokens_from_driver(driver) -> tuple:
     tob_token = None
     entity_id = None
+    jwt_token = None
     for c in driver.get_cookies():
         name = c["name"]
         val = c["value"]
         if name == "shopee_tob_token": 
             tob_token = val
+        elif name in ("__shopee_partner_website_x_token_live", "__shopee_partner_website_x_token"):
+            try:
+                import base64, json
+                p = val.split(".")[1]
+                p += "=" * (-len(p) % 4)
+                data = json.loads(base64.b64decode(p))
+                if data.get("token"):
+                    jwt_token = data["token"]
+            except Exception:
+                pass
         elif name.lower() in ["shopee_tob_entity_id", "shopee_foody_mid", "x-merchant-id", "spc_merchant_id", "merchant_id", "shopid", "shop_id"]:
             if val and not entity_id: entity_id = val
-            
+
+    if jwt_token:
+        tob_token = jwt_token
+
     if not entity_id:
         try: 
             # Try API first (Most accurate) - using full URL and credentials
             api_js = """
             var done = arguments[arguments.length - 1];
-            let token = document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
+            let token = arguments[0] || document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
             fetch('https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo', {
                 method: 'POST',
                 headers: {
@@ -663,7 +677,7 @@ def extract_tokens_from_driver(driver) -> tuple:
             .then(j => done(j.data ? j.data.merchantId : null))
             .catch(() => done(null));
             """
-            entity_id = driver.execute_async_script(api_js)
+            entity_id = driver.execute_async_script(api_js, tob_token)
         except: pass
 
     if not entity_id:

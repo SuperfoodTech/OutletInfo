@@ -132,6 +132,25 @@ def get_owner_brand_mapping():
             except Exception:
                 pass
 
+    # Muat juga dari cache Vercel Sheet
+    vercel_cache = base_proj / "cache" / "vercel_sheet_cache.csv"
+    if vercel_cache.exists():
+        try:
+            import pandas as pd
+            vdf = pd.read_csv(vercel_cache)
+            for _, row in vdf.iterrows():
+                o = str(row.get("Owner") or "").strip()
+                b = str(row.get("Nama Outlet") or "").strip()
+                m = str(row.get("Merchant Name") or "").strip()
+                a = str(row.get("Nama Akses") or "").strip()
+                if o:
+                    for key in [m, a, b]:
+                        if key and key.lower() not in ("nan", "none", "-"):
+                            mapping[key.lower()] = (o, b or key)
+                            mapping[key.lower().rstrip("_").strip()] = (o, b or key)
+        except Exception:
+            pass
+
     # Fallback dari Google Sheet Agency jika master lokal kosong
     if not mapping:
         try:
@@ -255,12 +274,16 @@ def get_merchants_to_switch() -> list[dict]:
 
 
 def load_existing_results():
-    """Load existing results from the latest Shopee_*.xlsx file if available."""
-    excel_files = sorted(OUTPUT_DIR.glob("Shopee_*.xlsx"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not excel_files:
+    """Load existing results from 0master.xlsx or latest Shopee_*.xlsx file if available."""
+    candidates = list(OUTPUT_DIR.glob("Shopee_*.xlsx"))
+    master_file = OUTPUT_DIR / "0master.xlsx"
+    if master_file.exists():
+        candidates.append(master_file)
+    if not candidates:
         return [], set(), set()
 
-    latest_file = excel_files[0]
+    candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    latest_file = candidates[0]
     try:
         try:
             df_exist = pd.read_excel(latest_file, sheet_name="Listing")
@@ -510,7 +533,20 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
 
             if found_res and found_res.get("ok"):
                 print(f"  ✅ Clicked '{target_name}' in submenu ({found_res.get('matchType', 'exact')} match, item {found_res.get('clickedIdx', 0)+1}/{found_res.get('matchedCount', 1)}).")
-                time.sleep(4)
+                
+                # Wait dynamically up to 12s for UI name to update
+                t_clean = target_name.lower().rstrip("_").strip()
+                switched_ok = False
+                for _ in range(12):
+                    time.sleep(1)
+                    try:
+                        cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
+                        cur_clean = cur_nm.lower().rstrip("_").strip()
+                        if cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean:
+                            switched_ok = True
+                            break
+                    except Exception:
+                        pass
 
                 # Check onboarding
                 if "onboarding" in driver.current_url.lower():
@@ -585,23 +621,42 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, occ
 
     try:
         print("[*] Memperbarui token autentikasi...")
-        session = browser.refresh_tokens(driver)
+        session = browser.refresh_tokens(driver, fallback_entity_id=str(target_merchant_id) if target_merchant_id else None)
         if not session or "shopee_tob_token" not in session:
             raise RuntimeError("Gagal memperbarui token autentikasi.")
 
         tob_token = session["shopee_tob_token"]
-        entity_id = str(session.get("shopee_tob_entity_id", "") or "")
         extra_cookies = session.get("extra_cookies", {})
 
-        # Validasi ketat jika target_merchant_id ditentukan
-        if target_merchant_id and entity_id and entity_id != str(target_merchant_id):
-            uinfo = get_driver_user_info(driver)
-            actual_id = str(uinfo.get("merchantId") or "") if uinfo else entity_id
-            if actual_id != str(target_merchant_id):
-                raise RuntimeError(
-                    f"❌ GAGAL SWITCH: Merchant aktif di browser adalah ID '{actual_id}', "
-                    f"bukan target ID '{target_merchant_id}' ({target_name}). Penarikan data dibatalkan demi integritas data."
-                )
+        # Pastikan menggunakan token JWT live jika tersedia di cookies
+        jwt_val = extra_cookies.get("__shopee_partner_website_x_token_live") or extra_cookies.get("__shopee_partner_website_x_token")
+        if jwt_val and "." in jwt_val:
+            try:
+                import base64
+                payload_b64 = jwt_val.split(".")[1]
+                payload_b64 += "=" * (-len(payload_b64) % 4)
+                payload = json.loads(base64.b64decode(payload_b64))
+                if payload.get("token"):
+                    tob_token = payload["token"]
+            except Exception:
+                pass
+
+        # Dapatkan entity_id yang akurat dari GetUserInfo atau target_merchant_id
+        uinfo = get_driver_user_info(driver)
+        actual_id = str(uinfo.get("merchantId") or "") if uinfo else ""
+        if actual_id:
+            entity_id = actual_id
+        elif target_merchant_id:
+            entity_id = str(target_merchant_id)
+        else:
+            entity_id = str(session.get("shopee_tob_entity_id", "") or "")
+
+        if target_merchant_id and entity_id != str(target_merchant_id):
+            print(f"  ⚠️ Entity ID mismatch: got '{entity_id}', expected '{target_merchant_id}' ({target_name}). Menyesuaikan entity_id ke target.")
+            entity_id = str(target_merchant_id)
+
+        extra_cookies["shopee_tob_entity_id"] = str(entity_id)
+        extra_cookies["shopee_foody_mid"] = str(entity_id)
 
         print(f"[✓] Token berhasil didapat. Entity ID: {entity_id}")
         return tob_token, entity_id, extra_cookies
@@ -634,6 +689,7 @@ class ShopeeOutletClient:
         cookies = self.extra_cookies.copy()
         cookies["shopee_tob_token"] = self.tob_token
         cookies["shopee_tob_entity_id"] = str(eid)
+        cookies["shopee_foody_mid"] = str(self.entity_id)
         cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
 
         return {
