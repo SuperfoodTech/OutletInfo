@@ -303,16 +303,22 @@ async def perform_login(page, username, password):
                 logger.info(f"[✓] Berhasil masuk via tombol Continue untuk {username}!")
                 return True
 
-        # Cek apakah form username sedang aktif/terbuka (jika ada, WAJIB isi username terlebih dahulu)
-        username_input = page.locator('input[placeholder*="username" i], input[type="text"], input[name="username"]').first
-        u_visible = False
+        # ── Step 1: Cek apakah sudah langsung berada di layar input Password ──────────
+        # Layar password asli memiliki id="password" atau placeholder="Password", 
+        # BUKAN styles__hiddenInput___2zD9- yang sengaja disisipkan Grab di layar Username.
+        real_password_input = page.locator('#password, input[placeholder*="password" i]:not([class*="hiddenInput"]), input.dui-input[type="password"]').first
+        is_on_password_step = False
         try:
-            u_visible = await username_input.is_visible()
+            is_on_password_step = await real_password_input.is_visible()
         except Exception:
             pass
 
-        if u_visible:
-            # ── Step 1: Pastikan tab Username aktif jika ada ──────────────────
+        if not is_on_password_step:
+            # ── Step 2: Form Username ──────────────────────────────────────────
+            username_input = page.locator('#Username, input[placeholder*="username" i], input[type="text"]').first
+            await username_input.wait_for(state="visible", timeout=20000)
+
+            # Pastikan tab Username aktif jika ada opsi Phone/Username/SSO
             username_tab = page.get_by_role("tab", name="Username")
             try:
                 if await username_tab.is_visible(timeout=1500):
@@ -321,15 +327,13 @@ async def perform_login(page, username, password):
             except Exception:
                 pass
 
-            # ── Step 2: Isi username ──────────────────────────────────────────
             logger.info(f"Mengetik username: {username}")
-            await username_input.wait_for(state="visible", timeout=10000)
             await human_type(username_input, username)
             if await username_input.input_value() != username:
                 await username_input.fill(username)
             await asyncio.sleep(0.5)
 
-            # ── Step 3: Klik Continue (pertama) ──────────────────────────────
+            # Klik Continue setelah isi username
             logger.info("Klik Continue (username)...")
             continue_btn = page.get_by_role("button", name="Continue")
             await continue_btn.wait_for(state="visible", timeout=10000)
@@ -341,20 +345,19 @@ async def perform_login(page, username, password):
             await continue_btn.click()
             await asyncio.sleep(1.0)
 
-        # ── Step 4: Tunggu form password muncul ───────────────────────────────
+        # ── Step 3: Tunggu form password asli muncul ──────────────────────────
         logger.info("Menunggu form password...")
-        password_input = page.locator('input[type="password"]').first
-        await password_input.wait_for(state="visible", timeout=15000)
+        await real_password_input.wait_for(state="visible", timeout=20000)
         await asyncio.sleep(0.5)
 
-        # ── Step 5: Isi password ─────────────────────────────────────────────
+        # ── Step 4: Isi password ─────────────────────────────────────────────
         logger.info("Mengetik password...")
-        await human_type(password_input, password)
-        if await password_input.input_value() != password:
-            await password_input.fill(password)
+        await human_type(real_password_input, password)
+        if await real_password_input.input_value() != password:
+            await real_password_input.fill(password)
         await asyncio.sleep(0.5)
 
-        # ── Step 6: Klik Continue (kedua) ────────────────────────────────────
+        # ── Step 5: Klik Continue (password) ─────────────────────────────────
         logger.info("Klik Continue (password)...")
         continue_btn2 = page.get_by_role("button", name="Continue")
         await continue_btn2.wait_for(state="visible", timeout=10000)
@@ -365,7 +368,7 @@ async def perform_login(page, username, password):
         await asyncio.sleep(0.3)
         await continue_btn2.click()
 
-        # ── Step 7: Tunggu redirect ke dashboard / keluar dari login ─────────────────────
+        # ── Step 6: Tunggu redirect ke dashboard / keluar dari login ──────────
         logger.info("Menunggu redirect ke dashboard...")
         for _ in range(30):
             await page.wait_for_timeout(1000)
