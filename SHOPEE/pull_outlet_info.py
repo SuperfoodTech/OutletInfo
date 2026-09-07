@@ -332,6 +332,16 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
 
     print(f"🔄 [MERCHANT] Switching to: '{target_name}' (Target ID: {target_id or '-'}, Occ: {target_occ_idx})...")
     try:
+        # Fast check if already active on target merchant in dashboard UI
+        try:
+            cur_el = driver.find_element(By.CSS_SELECTOR, ".merchantName, [class*='merchantName']")
+            cur_ui_name = (cur_el.text or "").strip()
+            if cur_ui_name and (cur_ui_name.lower() == target_name.lower() or cur_ui_name.lower().rstrip("_") == target_name.lower().rstrip("_")):
+                print(f"  ✅ [MERCHANT] Sudah aktif pada merchant: '{cur_ui_name}'. Tidak perlu switch.")
+                return True
+        except Exception:
+            pass
+
         # Fast Loader Removal
         driver.execute_script("document.querySelectorAll('.ant-spin, [class*=\"loading\"], .shopee-loading').forEach(el => el.remove());")
         
@@ -478,6 +488,10 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     var chosen = matched[chosenIdx];
                     if (typeof chosen.scrollIntoView === 'function') chosen.scrollIntoView({block: 'center'});
                     chosen.click();
+                    try {
+                        var clickEvt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                        chosen.dispatchEvent(clickEvt);
+                    } catch(e) {}
                     return { ok: true, matchedCount: matched.length, clickedIdx: chosenIdx, matchType: exactMatches.length > 0 ? 'exact' : 'clean' };
                 }
                 return { ok: false, matchedCount: 0 };
@@ -845,6 +859,20 @@ def run_pull(
                 continue
 
         merchants_to_process.append(m)
+
+    # Fallback: Jika target spesifik diminta lewat argumen tetapi belum tercatat di merchant_list.json cache
+    if not merchants_to_process and (target_merchant_name or target_merchant_id):
+        fallback_name = target_merchant_name or str(target_merchant_id)
+        print(f"  [*] Target '{fallback_name}' tidak ada di merchant_list cache, tetap mencoba switch di portal live...")
+        merchants_to_process.append({
+            "merchant_id": target_merchant_id or "",
+            "merchant_name": fallback_name,
+            "label": fallback_name,
+            "occurrence_index": 0,
+            "total_occurrences": 1,
+            "staff_tob_uid": None,
+            "is_active": True,
+        })
 
     print(f"\n[*] Total {len(merchants_to_process)} merchant yang akan diproses:")
     for idx, m in enumerate(merchants_to_process, 1):
