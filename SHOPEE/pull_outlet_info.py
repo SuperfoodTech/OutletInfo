@@ -58,12 +58,15 @@ from dotenv import load_dotenv
 load_dotenv(SCRIPT_DIR.parent / ".env")
 HEADLESS_DEFAULT = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
 
-# FORCE the profile directory (same pattern as menu_core/shopee.py)
+# FORCE the profile directory (always use authenticated profile_allvbadmin)
 orig_add_argument = Options.add_argument
 def custom_add_argument(self, argument):
     if "--user-data-dir=" in argument:
         argument = f"--user-data-dir={CHROME_PROFILE_DIR}"
         print(f"🔧 [PATCH] Mengalihkan user data dir ke: {argument}")
+    elif "--profile-directory=" in argument:
+        argument = "--profile-directory=profile_allvbadmin"
+        print(f"🔧 [PATCH] Mengalihkan profile directory ke: {argument}")
     orig_add_argument(self, argument)
 Options.add_argument = custom_add_argument
 
@@ -72,7 +75,7 @@ Options.add_argument = custom_add_argument
 # ──────────────────────────────────────────────────────────────
 SELLER_BASE = "https://foody.shopee.co.id"
 TEMPLATE_FILE = SCRIPT_DIR / "YYYY-MM-DD HH_MM Nama Pemilik.xlsx"
-SESSION_FILE = SCRIPT_DIR / "data" / "session.json"
+SESSION_FILE = SCRIPT_DIR / "data" / "session_allvbadmin.json"
 CREDS_FILE = SCRIPT_DIR / "credentials.json"
 OUTPUT_DIR = SCRIPT_DIR / "data"
 
