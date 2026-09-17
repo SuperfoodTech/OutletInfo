@@ -788,6 +788,32 @@
                     "isActive": false,
                     "isBanned": false,
                     "isCurrentLoginUser": false
+                },
+                {
+                    "merchantId": 15641945112,
+                    "merchantName": "[SR] Warung Presiden_",
+                    "merchantLogo": "",
+                    "merchantStatus": 1,
+                    "staffTobUid": 15641945112,
+                    "staffRole": 2,
+                    "staffStatus": 1,
+                    "invitationExpiredTime": 0,
+                    "isActive": true,
+                    "isBanned": false,
+                    "isCurrentLoginUser": false
+                },
+                {
+                    "merchantId": 15763106157,
+                    "merchantName": "Tahu Telor Ciamis",
+                    "merchantLogo": "",
+                    "merchantStatus": 1,
+                    "staffTobUid": 15763106157,
+                    "staffRole": 2,
+                    "staffStatus": 1,
+                    "invitationExpiredTime": 0,
+                    "isActive": true,
+                    "isBanned": false,
+                    "isCurrentLoginUser": false
                 }
             ]
         },

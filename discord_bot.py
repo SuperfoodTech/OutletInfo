@@ -295,7 +295,7 @@ class ControlPanelView(discord.ui.View):
         self.owners_meta = []
         self.current_page = 0
         self.total_pages = 1
-        self.reload_metadata(force_live=False)
+        self.reload_metadata(force_live=True)
 
     def rebuild_components(self):
         self.clear_items()
@@ -698,7 +698,7 @@ async def generate_slash(interaction: discord.Interaction, owner: str = None):
 
 @generate_slash.autocomplete("owner")
 async def generate_owner_autocomplete(interaction: discord.Interaction, current: str):
-    owners = get_owners_with_metadata(source="vercel")
+    owners = get_owners_with_metadata(source="vercel", force_live=True)
     choices = []
     current_lower = (current or "").strip().lower()
 

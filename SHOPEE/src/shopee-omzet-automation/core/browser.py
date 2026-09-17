@@ -258,327 +258,143 @@ def _deliberate_logout_and_relogin(
     username: str = None,
     password: str = None,
     phone:    str = None,
+    target_name: str = None,
 ) -> bool:
     """
-    Intentional recovery strategy for when merchant cannot be detected.
-
-    Flow:
-      1. Click the profile area  →  open dropdown
-      2. Click 'Log Out' from the dropdown
-      3. Click the confirmation 'Log Out' button
-      4. Try Chrome profile auto-login (fast path, no OTP)
-      5. Fallback: enter credentials (username/password) via _perform_login()
-      Returns True if back on the portal, False on complete failure.
+    Intentional recovery strategy for when merchant cannot be detected or switched.
+    1. Reset session cookies while preserving SPC device trust (no OTP).
+    2. Re-login with master credentials.
+    3. If on selector page and target_name is specified, choose target_name directly.
     """
-    log.info("🔄 [LOGOUT-RELOGIN] Initiating deliberate logout for clean session recovery...")
+    log.info("🔄 [LOGOUT-RELOGIN] Initiating deliberate session reset and relogin recovery...")
     try:
-        # Check if already on login/authenticate page (meaning we are redirected or logged out already)
         url_now = driver.current_url.lower()
-        if "login" in url_now or "authenticate" in url_now:
-            log.info("  🛡️ Browser is already on the login/authenticate page. Skipping UI dropdown logout.")
-            log.info("  🌐 Attempting direct login preserving all cookies/storage to leverage device trust...")
-            if not (username and password) and not phone:
-                log.warning("  ⚠️ No credentials provided — cannot complete login.")
-                return False
-            wait = WebDriverWait(driver, 30)
-            login_ok = _perform_login(driver, wait, username=username, password=password, phone=phone)
-            if login_ok:
-                log.info("  ⏳ Menunggu pengalihan halaman setelah login recovery...")
-                redirected_ok = False
-                for _ in range(30):  # 30 * 0.5s = 15s max wait
-                    curr_url = driver.current_url.lower()
-                    if "onboarding" in curr_url or "merchant-selector" in curr_url or "dashboard" in curr_url:
-                        redirected_ok = True
-                        break
-                    time.sleep(0.5)
-                if redirected_ok:
-                    log.info("  ✅ [LOGOUT-RELOGIN] Credential login succeeded directly from login page!")
-                    return True
-            return False
-
-        # ── Step 1: Navigate to a page that has the profile dropdown ───
-        if "/food/" not in driver.current_url and "/settings/" not in driver.current_url:
-            driver.get(PARTNER_DASHBOARD)
-            time.sleep(3)
-
-        # ── Step 2: Open the profile/merchantName dropdown with retries ───
-        profile_clicked = False
-        for attempt in range(3):
-            # Dismiss any blocking overlays/notifications
+        if "login" not in url_now and "authenticate" not in url_now:
+            log.info("  🧹 Executing clean session token reset (preserving device trust)...")
             driver.execute_script("""
-                document.querySelectorAll('.ant-notification, .ant-modal, .ant-notification-notice, .ant-message').forEach(el => el.remove());
+                try {
+                    fetch('https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/LogoutAccount', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-merchant-token': (window.injectData && window.injectData.User) ? window.injectData.User.token : '',
+                            'x-merchant-language': 'id',
+                            'x-merchant-login-from': '12'
+                        },
+                        body: '{}',
+                        credentials: 'include'
+                    });
+                } catch(e) {}
+
+                sessionStorage.clear();
+                var cookies = document.cookie.split(';');
+                var domain = '.' + document.domain.split('.').slice(1).join('.');
+                for (var i = 0; i < cookies.length; i++) {
+                    var c = cookies[i];
+                    var eq = c.indexOf('=');
+                    var name = (eq > -1 ? c.substr(0, eq) : c).trim();
+                    if (name.indexOf('SPC_') < 0) {
+                        document.cookie = name + '=;path=/;expires=Thu, 01 Jan 1970 00:00:00 GMT;Domain=' + domain;
+                        document.cookie = name + '=;path=/;expires=Thu, 01 Jan 1970 00:00:00 GMT';
+                    }
+                }
+                window.location.href = 'https://partner.shopee.co.id/login';
             """)
-            
-            # Find the WebElement via JS returning it
-            profile_el = driver.execute_script("""
-                var profileEl = null;
-                // 1. Try specific CSS selectors first
-                for (var sel of ['.merchantName', '.user-info', '.ant-dropdown-trigger', '.ant-dropdown-link']) {
-                    var el = document.querySelector(sel);
-                    if (el && el.offsetHeight > 0) {
-                        profileEl = el;
-                        break;
-                    }
-                }
-                // 2. Search for element containing "Admin:"
-                if (!profileEl) {
-                    var elements = Array.from(document.querySelectorAll('span, p, div, li, a'));
-                    for (var el of elements) {
-                        var text = (el.innerText || '').trim();
-                        if (text.includes('Admin:') && text.length < 30 && el.offsetHeight > 0) {
-                            profileEl = el;
-                            break;
-                        }
-                    }
-                }
-                // 3. Fallback to last .ant-dropdown-trigger
-                if (!profileEl) {
-                    var triggers = Array.from(document.querySelectorAll('.ant-dropdown-trigger, .ant-dropdown-link'));
-                    if (triggers.length > 0) {
-                        profileEl = triggers[triggers.length - 1];
-                    }
-                }
-                return profileEl;
-            """)
-            
-            if profile_el:
-                log.info(f"  📍 Found profile menu element (Attempt {attempt+1}). Dispatching JS click...")
-                # Dispatch JS events
-                driver.execute_script("""
-                    var el = arguments[0];
-                    var ev1 = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
-                    var ev2 = new MouseEvent('mouseenter', { bubbles: true, cancelable: true });
-                    var ev3 = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-                    var ev4 = new MouseEvent('click', { bubbles: true, cancelable: true });
-                    var ev5 = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
-                    el.dispatchEvent(ev1);
-                    el.dispatchEvent(ev2);
-                    el.dispatchEvent(ev3);
-                    el.dispatchEvent(ev4);
-                    el.dispatchEvent(ev5);
-                """, profile_el)
-                time.sleep(1.5)
-                
-                # Check if dropdown is visible (ignoring hidden parents)
-                has_dropdown = driver.execute_script("""
-                    var targets = ['log out', 'logout', 'keluar'];
-                    var candidates = Array.from(document.querySelectorAll('li, span, div, a'));
-                    for (var el of candidates) {
-                        var rect = el.getBoundingClientRect();
-                        if (rect.width === 0 || rect.height === 0) continue;
-                        if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
-                        var text = (el.innerText || '').trim().toLowerCase();
-                        if (targets.some(function(k){ return text.includes(k); })) {
-                            return true;
-                        }
-                    }
-                    return false;
-                """)
-                
-                if not has_dropdown:
-                    log.info("  ⚠️ JS click did not reveal dropdown. Retrying with Selenium native ActionChains hover/click...")
-                    try:
-                        actions = ActionChains(driver)
-                        actions.move_to_element(profile_el).perform()
-                        time.sleep(0.5)
-                        actions.click(profile_el).perform()
-                        time.sleep(1.5)
-                        
-                        has_dropdown = driver.execute_script("""
-                            var targets = ['log out', 'logout', 'keluar'];
-                            var candidates = Array.from(document.querySelectorAll('li, span, div, a'));
-                            for (var el of candidates) {
-                                var rect = el.getBoundingClientRect();
-                                if (rect.width === 0 || rect.height === 0) continue;
-                                if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
-                                var text = (el.innerText || '').trim().toLowerCase();
-                                if (targets.some(function(k){ return text.includes(k); })) {
-                                    return true;
-                                }
-                            }
-                            return false;
-                        """)
-                    except Exception as e:
-                        log.warning(f"  ⚠️ ActionChains failed: {e}")
-                
-                if has_dropdown:
-                    log.info("  ✅ Dropdown is now visible.")
-                    profile_clicked = True
-                    break
-                else:
-                    log.warning("  ⚠️ Dropdown menu elements not visible yet. Retrying...")
-            else:
-                log.warning(f"  ⚠️ Profile element not found on page (Attempt {attempt+1}). Retrying...")
-            time.sleep(1.5)
+            time.sleep(2)
 
-        if not profile_clicked:
-            log.warning("  ⚠️ Profile element or dropdown could not be opened.")
-            return False
+        for _ in range(15):
+            url_now = driver.current_url.lower()
+            if "login" in url_now or "authenticate" in url_now:
+                break
+            time.sleep(0.5)
 
-        # ── Step 3: Find and click 'Log Out' in the dropdown ────────────
-        logout_el = driver.execute_script("""
-            var targets = ['log out', 'logout', 'keluar'];
-            var candidates = Array.from(document.querySelectorAll(
-                'li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item,'
-                + '[class*="menu-item"], span, div, a'
-            ));
-            for (var el of candidates) {
-                var rect = el.getBoundingClientRect();
-                if (rect.width === 0 || rect.height === 0) continue;
-                if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
-                
-                var text = (el.innerText || '').trim().toLowerCase();
-                if (targets.some(function(k){ return text === k; })) {
-                    // Walk up to the closest interactive wrapper (e.g. li or .ant-dropdown-menu-item)
-                    var clickable = el.closest('li, button, a, [role="menuitem"], .ant-dropdown-menu-item') || el;
-                    return clickable;
-                }
-            }
-            return null;
-        """)
-
-        if not logout_el:
-            log.warning("  ⚠️ 'Log Out' menu item not found in dropdown.")
-            return False
-
-        # Click it using Selenium
-        try:
-            log.info("  👈 Clicking 'Log Out' menu item...")
-            logout_el.click()
-        except Exception:
-            # Fallback to ActionChains
-            try:
-                ActionChains(driver).move_to_element(logout_el).click().perform()
-            except Exception as e:
-                log.warning(f"  ⚠️ Selenium click failed: {e}. Trying JS MouseEvents as fallback...")
-                driver.execute_script("""
-                    var el = arguments[0];
-                    var ev1 = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
-                    var ev2 = new MouseEvent('mouseenter', { bubbles: true, cancelable: true });
-                    var ev3 = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-                    var ev4 = new MouseEvent('click', { bubbles: true, cancelable: true });
-                    var ev5 = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
-                    el.dispatchEvent(ev1); el.dispatchEvent(ev2); el.dispatchEvent(ev3); el.dispatchEvent(ev4); el.dispatchEvent(ev5);
-                """, logout_el)
-        
-        time.sleep(1.5)  # Wait for confirmation dialog
-
-        # ── Step 4: Click the 'Log Out' confirmation button with retries ────
-        confirm_clicked = False
-        for confirm_attempt in range(5):
-            confirm_el = driver.execute_script("""
-                var targets = ['log out', 'logout', 'keluar'];
-                // ONLY look inside modal containers
-                var modal = document.querySelector('.ant-modal-content, .ant-modal, .ant-dialog, .ant-modal-wrap');
-                if (!modal) return null;
-                
-                var candidates = Array.from(modal.querySelectorAll('button, .ant-btn, [role="button"]'));
-                for (var btn of candidates) {
-                    var rect = btn.getBoundingClientRect();
-                    if (rect.width === 0 || rect.height === 0) continue;
-                    var text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
-                    if (targets.some(function(k){ return text === k || text === ('confirm ' + k); })) {
-                        // Walk up to the closest clickable element (e.g. button or .ant-btn)
-                        var clickable = btn.closest('button, [role="button"], a, .ant-btn') || btn;
-                        return clickable;
-                    }
-                }
-                return null;
-            """)
-            
-            if confirm_el:
-                log.info(f"  📍 Found confirmation button on Attempt {confirm_attempt+1}. Clicking...")
-                try:
-                    confirm_el.click()
-                except Exception as e:
-                    log.warning(f"  ⚠️ Selenium click failed: {e}. Trying ActionChains...")
-                    try:
-                        ActionChains(driver).move_to_element(confirm_el).click().perform()
-                    except Exception as e2:
-                        log.warning(f"  ⚠️ ActionChains click failed: {e2}. Trying JS click...")
-                        driver.execute_script("arguments[0].click();", confirm_el)
-                
-                time.sleep(2)
-                # Verify if modal is gone
-                modal_present = driver.execute_script("""
-                    var modal = document.querySelector('.ant-modal-content, .ant-modal, .ant-dialog, .ant-modal-wrap');
-                    return !!(modal && modal.offsetHeight > 0);
-                """)
-                if not modal_present:
-                    log.info("  ✅ Modal disappeared. Logout confirmed.")
-                    confirm_clicked = True
-                    break
-                else:
-                    log.warning("  ⚠️ Modal is still present after click. Retrying...")
-            else:
-                log.warning(f"  ⚠️ Confirmation button/modal not found yet (Attempt {confirm_attempt+1}). Retrying...")
-                time.sleep(1.5)
-
-        if not confirm_clicked:
-            log.warning("  ⚠️ Confirmation 'Log Out' button could not be clicked via UI.")
-            
-            # --- DEBUG SCREENSHOT JIKA KLIK GAGAL ---
-            try:
-                import os
-                debug_dir = os.path.join("src", "shopee-omzet-automation", "data", "debug")
-                os.makedirs(debug_dir, exist_ok=True)
-                ss_fail_path = os.path.join(debug_dir, "modal_fail_server.png")
-                driver.save_screenshot(ss_fail_path)
-                log.info(f"  📸 [DEBUG] Screenshot penyebab kegagalan klik disimpan di {ss_fail_path}")
-            except Exception as e:
-                pass
-            # ----------------------------------------
-            
-            log.warning("  ⚠️ UI logout failed. Aborting recovery to prevent manual cookie deletion and OTP.")
-            return False
-
-        log.info("  ✅ Logout confirmed. Waiting for login page...")
-        time.sleep(3)
-
-        # ── Step 5a: Try Chrome profile auto-login (fast path) ──────────
-        log.info("  🌐 Attempting Chrome profile auto-login...")
-        driver.get(PARTNER_DASHBOARD)
-        time.sleep(5)
-        url_now = driver.current_url.lower()
-        if "dashboard" in url_now or "merchant-selector" in url_now or "onboarding" in url_now:
-            log.info("  ✅ [LOGOUT-RELOGIN] Auto-login via Chrome profile succeeded!")
-            return True
-
-        # ── Step 5b: Fallback — login dengan kredensial ────────────────
-        log.info("  ⚠️ Chrome profile auto-login failed — logging in with credentials...")
-        if not (username and password) and not phone:
-            log.warning("  ⚠️ No credentials provided — cannot complete login.")
-            return False
-
-        # Navigate to login page if not already there
-        current = driver.current_url.lower()
-        if "login" not in current and "authenticate" not in current:
-            driver.get("https://partner.shopee.co.id/login")
-            time.sleep(4)
-
+        log.info("  🔑 Performing credential login (preserving device trust)...")
         wait = WebDriverWait(driver, 30)
         login_ok = _perform_login(driver, wait, username=username, password=password, phone=phone)
         if not login_ok:
-            log.error("  ❌ Credential login failed.")
+            log.error("  ❌ Credential login failed during recovery.")
             return False
 
-        # Wait for dashboard or merchant selector after login
-        time.sleep(3)
-        url_after = driver.current_url.lower()
-        if "dashboard" in url_after or "merchant-selector" in url_after or "onboarding" in url_after:
-            log.info("  ✅ [LOGOUT-RELOGIN] Credential login succeeded!")
-            return True
+        log.info("  ⏳ Menunggu pengalihan halaman setelah login recovery...")
+        redirected_ok = False
+        for _ in range(30):
+            curr_url = driver.current_url.lower()
+            if "onboarding" in curr_url or "merchant-selector" in curr_url or "dashboard" in curr_url:
+                redirected_ok = True
+                break
+            time.sleep(0.5)
 
-        # Handle merchant-selector page if redirected there post-login
-        for _ in range(10):
-            url_after = driver.current_url.lower()
-            if "dashboard" in url_after or "merchant-selector" in url_after or "onboarding" in url_after:
-                log.info("  ✅ [LOGOUT-RELOGIN] Logged in and on portal.")
-                return True
-            time.sleep(1)
+        if not redirected_ok:
+            log.warning(f"  ⚠️ Tidak teralihkan ke dashboard/onboarding setelah login: {driver.current_url}")
+            return False
 
-        log.warning(f"  ⚠️ [LOGOUT-RELOGIN] Unexpected URL after credential login: {driver.current_url}")
-        return False
+        if "onboarding" in driver.current_url.lower() or "merchant-selector" in driver.current_url.lower():
+            if _handle_onboarding_invitation(driver):
+                time.sleep(3)
+
+        if "onboarding" in driver.current_url.lower() or "merchant-selector" in driver.current_url.lower():
+            log.info(f"  📍 Selector page active. Selecting target: '{target_name or 'first available'}'...")
+            select_js = """
+                function norm(s) {
+                    return (s || '')
+                        .toLowerCase()
+                        .replace(/\\[.*?\\]/g, '')
+                        .replace(/[^a-z0-9]/g, '')
+                        .trim();
+                }
+                var targetRaw = (arguments[0] || "").toLowerCase().trim();
+                var targetClean = targetRaw.replace(/_+$/, '').trim();
+                var targetNorm = norm(targetRaw);
+                var listItems = document.querySelectorAll('.listItem, .merchant-item, li[class*="item"], div[class*="card"], [class*="merchant-item"], .ant-list-item');
+                var chosen = null;
+                if (targetRaw) {
+                    for (var i = 0; i < listItems.length; i++) {
+                        var el = listItems[i];
+                        var text = (el.innerText || el.textContent || "").toLowerCase().trim();
+                        if (!text) continue;
+                        var textClean = text.replace(/_+$/, '').trim();
+                        var textNorm = norm(text);
+                        if (targetNorm && textNorm === targetNorm) {
+                            chosen = el;
+                            break;
+                        } else if (text === targetRaw || textClean === targetClean) {
+                            chosen = el;
+                            break;
+                        } else if (!chosen && targetNorm && (textNorm.includes(targetNorm) || targetNorm.includes(textNorm))) {
+                            chosen = el;
+                        } else if (!chosen && (text.includes(targetRaw) || (targetClean && text.includes(targetClean)))) {
+                            chosen = el;
+                        }
+                    }
+                }
+                if (!chosen && !targetRaw && listItems.length > 0) {
+                    chosen = listItems[0];
+                }
+                if (chosen) {
+                    if (typeof chosen.scrollIntoView === 'function') chosen.scrollIntoView({block: 'center'});
+                    setTimeout(function() {
+                        try { chosen.click(); } catch(e) {}
+                        try { chosen.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e) {}
+                    }, 50);
+                    return true;
+                }
+                return false;
+            """
+            for _ in range(10):
+                try:
+                    if driver.execute_script(select_js, target_name):
+                        break
+                except Exception as ex:
+                    log.debug(f"  Selector script notice: {ex}")
+                time.sleep(1)
+
+            for _ in range(15):
+                if "/food/dashboard" in driver.current_url.lower():
+                    break
+                time.sleep(1)
+
+        log.info(f"  ✅ [LOGOUT-RELOGIN] Recovery selesai. URL saat ini: {driver.current_url}")
+        return True
 
     except Exception as e:
         log.error(f"  ❌ [LOGOUT-RELOGIN] Failed: {e}")
@@ -1615,36 +1431,67 @@ def get_session(username=None, password=None, phone=None, headless=None, close_b
                         # If still on onboarding/selector, fall through to listItem bypass below
                     
                     if not bypass_success:
-                        log.info("📍 [SESSION] Merchant selector detected. Selecting first available merchant...")
+                        log.info(f"📍 [SESSION] Merchant selector detected. Selecting target: '{target_name or 'first available'}'...")
                         bypass_js = """
-                            var loaders = document.querySelectorAll('.ant-spin, [class*="loading"], .shopee-loading, .ant-spin-nested-loading');
-                            loaders.forEach(el => el.remove());
-                            // Klik elemen wrapper .listItem (bukan inner .merchantInfo) 
-                            // karena event onClick menempel di wrapper terluar.
-                            var target = document.querySelector('.listItem, .merchant-item, li[class*="item"], [class*="merchant-item"], .ant-list-item');
-                            if (target) {
-                                target.scrollIntoView({block: 'center'});
-                                try { target.click(); } catch(e) {}
-                                var clickEvent = new MouseEvent('click', {
-                                    bubbles: true,
-                                    cancelable: true,
-                                    view: window
-                                });
-                                target.dispatchEvent(clickEvent);
+                            function norm(s) {
+                                return (s || '')
+                                    .toLowerCase()
+                                    .replace(/\\[.*?\\]/g, '')
+                                    .replace(/[^a-z0-9]/g, '')
+                                    .trim();
+                            }
+                            var targetRaw = (arguments[0] || "").toLowerCase().trim();
+                            var targetClean = targetRaw.replace(/_+$/, '').trim();
+                            var targetNorm = norm(targetRaw);
+                            var listItems = document.querySelectorAll('.listItem, .merchant-item, li[class*="item"], div[class*="card"], [class*="merchant-item"], .ant-list-item');
+                            var chosen = null;
+                            if (targetRaw) {
+                                for (var i = 0; i < listItems.length; i++) {
+                                    var el = listItems[i];
+                                    var text = (el.innerText || el.textContent || "").toLowerCase().trim();
+                                    if (!text) continue;
+                                    var textClean = text.replace(/_+$/, '').trim();
+                                    var textNorm = norm(text);
+                                    if (targetNorm && textNorm === targetNorm) {
+                                        chosen = el;
+                                        break;
+                                    } else if (text === targetRaw || textClean === targetClean) {
+                                        chosen = el;
+                                        break;
+                                    } else if (!chosen && targetNorm && (textNorm.includes(targetNorm) || targetNorm.includes(textNorm))) {
+                                        chosen = el;
+                                    } else if (!chosen && (text.includes(targetRaw) || (targetClean && text.includes(targetClean)))) {
+                                        chosen = el;
+                                    }
+                                }
+                            }
+                            if (!chosen && !targetRaw && listItems.length > 0) {
+                                chosen = listItems[0];
+                            }
+                            if (chosen) {
+                                if (typeof chosen.scrollIntoView === 'function') chosen.scrollIntoView({block: 'center'});
+                                setTimeout(function() {
+                                    try { chosen.click(); } catch(e) {}
+                                    try { chosen.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e) {}
+                                }, 50);
                                 return true;
                             }
                             return false;
                         """
                         for _ in range(10):
-                            if driver.execute_script(bypass_js):
+                            try:
+                                res = driver.execute_script(bypass_js, target_name)
+                            except Exception as ex:
+                                res = False
+                                log.debug(f"  Bypass script notice: {ex}")
+
+                            if res:
                                 log.debug("  ✅ Selection triggered via JS.")
                                 try:
-                                    # Wait for either dashboard to load, onboarding page to load, or the join button to appear
                                     log.debug("  ⏳ Waiting for redirect (either dashboard or onboarding)...")
                                     start_redirect_wait = time.time()
                                     redirected = False
                                     is_onboard_route = False
-                                    
                                     while time.time() - start_redirect_wait < 15:
                                         curr_url = driver.current_url.lower()
                                         if "/food/dashboard" in curr_url:

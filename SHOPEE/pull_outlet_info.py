@@ -174,6 +174,10 @@ def get_owner_brand_mapping():
 MERCHANT_INFO_MAP = {}
 MERCHANT_INFO_NAME_MAP = {}
 
+def norm_clean_name(s: str) -> str:
+    import re
+    return re.sub(r'[^a-z0-9]', '', re.sub(r'\[.*?\]', '', (s or '').lower()))
+
 def get_merchant_info(target_id=None, target_name=None) -> dict | None:
     """Lookup merchant metadata by ID or name."""
     if not MERCHANT_INFO_MAP:
@@ -182,9 +186,13 @@ def get_merchant_info(target_id=None, target_name=None) -> dict | None:
         return MERCHANT_INFO_MAP[str(target_id)]
     if target_name:
         clean_nm = target_name.lower().rstrip("_").strip()
+        t_norm = norm_clean_name(target_name)
         if clean_nm in MERCHANT_INFO_NAME_MAP:
             return MERCHANT_INFO_NAME_MAP[clean_nm]
         for k, v in MERCHANT_INFO_NAME_MAP.items():
+            k_norm = norm_clean_name(k)
+            if t_norm and (k_norm == t_norm or t_norm in k_norm or k_norm in t_norm):
+                return v
             if clean_nm == k or clean_nm in k or k in clean_nm:
                 return v
     return None
@@ -465,16 +473,13 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
         # Segera lakukan recovery login jika terdeteksi Unknown Merchant (tanpa menunggu 3x coba)
         if ("unknown" in cur_ui_name.lower() or not cur_ui_name) and not is_retry:
             print(f"  ⚠️ [MERCHANT] Terdeteksi merchant aktif tidak valid ('{cur_ui_name or 'Unknown'}'). Segera melakukan recovery login ulang master allvbadmin...")
-            recovered = browser._deliberate_logout_and_relogin(driver, username=DEFAULT_USERNAME, password=DEFAULT_PASSWORD)
+            recovered = browser._deliberate_logout_and_relogin(driver, username=DEFAULT_USERNAME, password=DEFAULT_PASSWORD, target_name=target_name)
             if recovered:
                 print("  🔄 [MERCHANT] Recovery login berhasil. Mengulang pemilihan merchant target...")
                 return enhanced_auto_switch_merchant(driver, target_name, is_retry=True)
             else:
                 print("  ❌ [MERCHANT] Recovery login master gagal.")
                 return False
-
-        # Fast Loader Removal
-        driver.execute_script("document.querySelectorAll('.ant-spin, [class*=\"loading\"], .shopee-loading').forEach(el => el.remove());")
 
         # ATTEMPT METHOD 1: Direct SwitchMerchant API (Fastest & most reliable)
         if target_tob_uid:
@@ -499,47 +504,75 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
         # ATTEMPT METHOD 2: Selector page right after login
         current_url = driver.current_url
         if "onboarding" in current_url or "merchant-selector" in current_url:
-            print(f"  📍 Detected Selector page. Mencoba memilih target langsung...")
-            time.sleep(3)
+            print(f"  📍 Detected Selector page. Mencoba memilih target '{target_name}' langsung...")
+            time.sleep(2)
             js_selector_click = """
+                function norm(s) {
+                    return (s || '').toLowerCase().replace(/\\[.*?\\]/g, '').replace(/[^a-z0-9]/g, '').trim();
+                }
                 var targetRaw = (arguments[0] || "").toLowerCase().trim();
                 var targetClean = targetRaw.replace(/_+$/, '').trim();
-                var listItems = document.querySelectorAll('.listItem, .merchant-item, li[class*="item"], div[class*="card"]');
+                var targetNorm = norm(targetRaw);
+                var listItems = document.querySelectorAll('.listItem, .merchant-item, li[class*="item"], div[class*="card"], [class*="merchant-item"], .ant-list-item');
                 var exact = null;
                 var clean = null;
                 var partial = null;
-                var fallback = null;
                 for (var i = 0; i < listItems.length; i++) {
                     var el = listItems[i];
                     var text = (el.innerText || el.textContent || "").toLowerCase().trim();
                     if (!text) continue;
-                    if (!fallback) fallback = el;
                     var textClean = text.replace(/_+$/, '').trim();
-                    if (text === targetRaw) {
+                    var textNorm = norm(text);
+                    if (targetNorm && textNorm === targetNorm) {
+                        exact = el;
+                        break;
+                    } else if (text === targetRaw) {
                         exact = el;
                         break;
                     } else if (!clean && (text === targetClean || textClean === targetClean)) {
                         clean = el;
+                    } else if (!partial && targetNorm && (textNorm.includes(targetNorm) || targetNorm.includes(textNorm))) {
+                        partial = el;
                     } else if (!partial && (text.includes(targetRaw) || (targetClean && text.includes(targetClean)))) {
                         partial = el;
                     }
                 }
-                var chosen = exact || clean || partial || fallback;
+                var chosen = exact || clean || partial;
                 if (chosen) {
                     if (typeof chosen.scrollIntoView === 'function') chosen.scrollIntoView({block: 'center'});
-                    chosen.click();
+                    setTimeout(function() {
+                        try { chosen.click(); } catch(e) {}
+                        try { chosen.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e) {}
+                    }, 50);
                     return true;
                 }
                 return false;
             """
             for _ in range(5):
-                if driver.execute_script(js_selector_click, target_name):
-                    time.sleep(4)
-                    break
+                try:
+                    if driver.execute_script(js_selector_click, target_name):
+                        time.sleep(3)
+                        break
+                except Exception:
+                    pass
                 time.sleep(1)
 
+            # Wait for dashboard redirect
+            for _ in range(8):
+                if "/food/dashboard" in driver.current_url.lower():
+                    break
+                time.sleep(1)
+            try:
+                cur_ui_name = (driver.find_element(By.CSS_SELECTOR, ".merchantName, [class*='merchantName']").text or "").strip()
+                cur_clean = cur_ui_name.lower().rstrip("_").strip()
+                if cur_clean and (cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean):
+                    print(f"  ✅ [SELECTOR] Berhasil beralih ke merchant: '{cur_ui_name}'.")
+                    return True
+            except Exception:
+                pass
+
         # ATTEMPT METHOD 3: Profile dropdown in dashboard
-        for switch_attempt in range(3):
+        for switch_attempt in range(2):
             if "/food/dashboard" not in driver.current_url:
                 driver.get("https://partner.shopee.co.id/food/dashboard")
                 time.sleep(3)
@@ -600,17 +633,34 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     time.sleep(1.5)
 
             if not dropdown_opened:
-                print(f"  [!] Dropdown sub-menu tidak terbuka (Attempt {switch_attempt+1}/3)")
+                print(f"  [!] Dropdown sub-menu tidak terbuka (Attempt {switch_attempt+1}/2)")
                 time.sleep(2)
                 continue
 
+            # Tunggu seluruh daftar store pada popover selesai dimuat (loading spinner hilang)
+            for _ in range(15):
+                spinning = driver.execute_script("""
+                    var pop = document.querySelector('.switch-mechant, [class*="switch-mech"]');
+                    if (!pop) return false;
+                    return pop.querySelector('.ant-spin-spinning') !== null;
+                """)
+                if not spinning:
+                    break
+                time.sleep(0.4)
+            time.sleep(0.5)
+
             js_switch_script = """
+                function norm(s) {
+                    return (s || '').toLowerCase().replace(/\\[.*?\\]/g, '').replace(/[^a-z0-9]/g, '').trim();
+                }
                 var targetRaw = (arguments[0] || "").toLowerCase().trim();
                 var targetClean = targetRaw.replace(/_+$/, '').trim();
+                var targetNorm = norm(targetRaw);
                 var targetOccIdx = arguments[1] || 0;
                 var items = document.querySelectorAll('li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item, [class*="menu-item"]');
                 
                 var exactMatches = [];
+                var normMatches = [];
                 var cleanMatches = [];
                 var partialMatches = [];
 
@@ -620,17 +670,22 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     var text = (el.innerText || el.textContent || "").toLowerCase().trim();
                     if (!text) continue;
                     var textClean = text.replace(/_+$/, '').trim();
+                    var textNorm = norm(text);
 
-                    if (text === targetRaw) {
+                    if (targetNorm && textNorm === targetNorm) {
+                        normMatches.push(el);
+                    } else if (text === targetRaw) {
                         exactMatches.push(el);
                     } else if (targetClean && (text === targetClean || textClean === targetClean)) {
                         cleanMatches.push(el);
+                    } else if (targetNorm && (textNorm.includes(targetNorm) || targetNorm.includes(textNorm))) {
+                        partialMatches.push(el);
                     } else if (targetClean && (textClean.includes(targetClean) || targetClean.includes(textClean))) {
                         partialMatches.push(el);
                     }
                 }
 
-                var matched = exactMatches.length > 0 ? exactMatches : (cleanMatches.length > 0 ? cleanMatches : partialMatches);
+                var matched = normMatches.length > 0 ? normMatches : (exactMatches.length > 0 ? exactMatches : (cleanMatches.length > 0 ? cleanMatches : partialMatches));
                 if (matched.length > 0) {
                     var chosenIdx = Math.min(targetOccIdx, matched.length - 1);
                     var chosen = matched[chosenIdx];
@@ -645,7 +700,7 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     if (typeof chosen.click === 'function') {
                         try { chosen.click(); } catch(e) {}
                     }
-                    var matchTypeStr = exactMatches.length > 0 ? 'exact' : (cleanMatches.length > 0 ? 'clean' : 'partial');
+                    var matchTypeStr = normMatches.length > 0 ? 'norm' : (exactMatches.length > 0 ? 'exact' : (cleanMatches.length > 0 ? 'clean' : 'partial'));
                     return { ok: true, matchedCount: matched.length, clickedIdx: chosenIdx, matchType: matchTypeStr };
                 }
                 return { ok: false, matchedCount: 0 };
@@ -665,9 +720,9 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
             if found_res and found_res.get("ok"):
                 print(f"  ✅ Clicked '{target_name}' in submenu ({found_res.get('matchType', 'exact')} match, item {found_res.get('clickedIdx', 0)+1}/{found_res.get('matchedCount', 1)}).")
                 
-                # Wait dynamically up to 12s for UI name to update
+                # Wait dynamically up to 8s for UI name to update
                 switched_ok = False
-                for _ in range(12):
+                for _ in range(8):
                     time.sleep(1)
                     try:
                         cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
@@ -687,10 +742,11 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     return True
                 else:
                     cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip() if driver.find_elements(By.CSS_SELECTOR, ".merchantName, .user-info") else "unknown"
-                    print(f"  ⚠️ Click berhasil tapi UI belum beralih ke '{target_name}' (saat ini: '{cur_nm}'). Mengulang percobaan...")
+                    print(f"  ⚠️ Click berhasil tapi UI belum beralih ke '{target_name}' (saat ini: '{cur_nm}'). Menghentikan percobaan dropdown untuk login recovery langsung...")
+                    break
             else:
-                print(f"  ⚠️ Outlet '{target_name}' tidak ditemukan di dropdown (Attempt {switch_attempt+1}/3).")
-                time.sleep(2)
+                print(f"  ⚠️ Outlet '{target_name}' tidak ditemukan di dropdown. Menghentikan percobaan dropdown...")
+                break
 
         # FINAL STRICT VERIFICATION
         final_ui = ""
@@ -705,7 +761,7 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
 
         if not is_retry:
             print(f"  ⚠️ [MERCHANT] Gagal beralih ke '{target_name}' (aktif: '{final_ui}'). Segera memicu recovery login ulang master allvbadmin...")
-            recovered = browser._deliberate_logout_and_relogin(driver, username=DEFAULT_USERNAME, password=DEFAULT_PASSWORD)
+            recovered = browser._deliberate_logout_and_relogin(driver, username=DEFAULT_USERNAME, password=DEFAULT_PASSWORD, target_name=target_name)
             if recovered:
                 print("  🔄 [MERCHANT] Recovery login berhasil. Mencoba memilih target kembali...")
                 return enhanced_auto_switch_merchant(driver, target_name, is_retry=True)
