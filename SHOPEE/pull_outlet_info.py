@@ -451,6 +451,7 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
 
     try:
         # Fast check if already active on target merchant in dashboard UI
+        cur_ui_name = ""
         try:
             cur_el = driver.find_element(By.CSS_SELECTOR, ".merchantName, [class*='merchantName']")
             cur_ui_name = (cur_el.text or "").strip()
@@ -460,6 +461,17 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 return True
         except Exception:
             pass
+
+        # Segera lakukan recovery login jika terdeteksi Unknown Merchant (tanpa menunggu 3x coba)
+        if ("unknown" in cur_ui_name.lower() or not cur_ui_name) and not is_retry:
+            print(f"  ⚠️ [MERCHANT] Terdeteksi merchant aktif tidak valid ('{cur_ui_name or 'Unknown'}'). Segera melakukan recovery login ulang master allvbadmin...")
+            recovered = browser._deliberate_logout_and_relogin(driver, username=DEFAULT_USERNAME, password=DEFAULT_PASSWORD)
+            if recovered:
+                print("  🔄 [MERCHANT] Recovery login berhasil. Mengulang pemilihan merchant target...")
+                return enhanced_auto_switch_merchant(driver, target_name, is_retry=True)
+            else:
+                print("  ❌ [MERCHANT] Recovery login master gagal.")
+                return False
 
         # Fast Loader Removal
         driver.execute_script("document.querySelectorAll('.ant-spin, [class*=\"loading\"], .shopee-loading').forEach(el => el.remove());")
@@ -600,6 +612,7 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 
                 var exactMatches = [];
                 var cleanMatches = [];
+                var partialMatches = [];
 
                 for (var i = 0; i < items.length; i++) {
                     var el = items[i];
@@ -612,10 +625,12 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                         exactMatches.push(el);
                     } else if (targetClean && (text === targetClean || textClean === targetClean)) {
                         cleanMatches.push(el);
+                    } else if (targetClean && (textClean.includes(targetClean) || targetClean.includes(textClean))) {
+                        partialMatches.push(el);
                     }
                 }
 
-                var matched = exactMatches.length > 0 ? exactMatches : cleanMatches;
+                var matched = exactMatches.length > 0 ? exactMatches : (cleanMatches.length > 0 ? cleanMatches : partialMatches);
                 if (matched.length > 0) {
                     var chosenIdx = Math.min(targetOccIdx, matched.length - 1);
                     var chosen = matched[chosenIdx];
@@ -630,7 +645,8 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     if (typeof chosen.click === 'function') {
                         try { chosen.click(); } catch(e) {}
                     }
-                    return { ok: true, matchedCount: matched.length, clickedIdx: chosenIdx, matchType: exactMatches.length > 0 ? 'exact' : 'clean' };
+                    var matchTypeStr = exactMatches.length > 0 ? 'exact' : (cleanMatches.length > 0 ? 'clean' : 'partial');
+                    return { ok: true, matchedCount: matched.length, clickedIdx: chosenIdx, matchType: matchTypeStr };
                 }
                 return { ok: false, matchedCount: 0 };
             """
@@ -686,6 +702,13 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
 
         if final_clean and (t_clean in final_clean or final_clean in t_clean):
             return True
+
+        if not is_retry:
+            print(f"  ⚠️ [MERCHANT] Gagal beralih ke '{target_name}' (aktif: '{final_ui}'). Segera memicu recovery login ulang master allvbadmin...")
+            recovered = browser._deliberate_logout_and_relogin(driver, username=DEFAULT_USERNAME, password=DEFAULT_PASSWORD)
+            if recovered:
+                print("  🔄 [MERCHANT] Recovery login berhasil. Mencoba memilih target kembali...")
+                return enhanced_auto_switch_merchant(driver, target_name, is_retry=True)
 
         print(f"  ❌ [STRICT VALIDATION] Gagal berpindah ke '{target_name}'. Merchant aktif saat ini: '{final_ui}'. Aborting switch.")
         return False

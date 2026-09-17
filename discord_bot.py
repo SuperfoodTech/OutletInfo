@@ -148,22 +148,58 @@ class AplikatorSelect(discord.ui.Select):
         await self.parent_view.update_panel(interaction)
 
 
-class OwnerSelect(discord.ui.Select):
-    def __init__(self, parent_view, owners_meta):
+PAGE_SIZE = 23  # Maksimal 23 owner per halaman (ditambah opsi batch __ALL__ di hal 1 agar <= 25 opsi Discord)
+
+class PageNavButton(discord.ui.Button):
+    def __init__(self, parent_view, direction: int):
         self.parent_view = parent_view
+        self.direction = direction
+        if direction == -1:
+            lbl = "◀ Hal Sebelumnya"
+            disabled = (parent_view.current_page == 0)
+            style = discord.ButtonStyle.secondary
+        else:
+            lbl = "Hal Berikutnya ▶"
+            disabled = (parent_view.current_page >= parent_view.total_pages - 1)
+            style = discord.ButtonStyle.primary
+
+        super().__init__(
+            label=lbl,
+            style=style,
+            disabled=disabled,
+            row=3
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        new_page = self.parent_view.current_page + self.direction
+        if 0 <= new_page < self.parent_view.total_pages:
+            self.parent_view.current_page = new_page
+            self.parent_view.rebuild_components()
+            await self.parent_view.update_panel(interaction)
+
+
+class OwnerSelect(discord.ui.Select):
+    def __init__(self, parent_view, owners_meta, page=0):
+        self.parent_view = parent_view
+        self.page = page
         options = []
         
-        # Opsi Batch Semua
-        options.append(discord.SelectOption(
-            label="[Semua Owner Terdaftar]",
-            value="__ALL__",
-            description="Proses seluruh owner multi-platform",
-            emoji="📦",
-            default=(parent_view.selected_owner == "__ALL__")
-        ))
+        start_idx = page * PAGE_SIZE
+        end_idx = min(start_idx + PAGE_SIZE, len(owners_meta))
+        page_owners = owners_meta[start_idx:end_idx]
 
-        # Discord batas maksimal 25 opsi per select (1 batch + 24 owner)
-        for meta in owners_meta[:24]:
+        # Opsi Batch Semua hanya ditampilkan di Halaman 1
+        if page == 0:
+            options.append(discord.SelectOption(
+                label="[Semua Owner Terdaftar]",
+                value="__ALL__",
+                description="Proses seluruh owner multi-platform",
+                emoji="📦",
+                default=(parent_view.selected_owner == "__ALL__")
+            ))
+
+        # Opsi Owner pada halaman aktif (maks 23 owner)
+        for meta in page_owners:
             owner_name = meta["owner"]
             brand = meta.get("brand", "").strip()
 
@@ -196,8 +232,15 @@ class OwnerSelect(discord.ui.Select):
                 default=(owner_name == parent_view.selected_owner)
             ))
 
+        total_pages = parent_view.total_pages
+        placeholder_txt = (
+            f"👤 Pilih Owner (Hal {page+1}/{total_pages}, {start_idx+1}-{end_idx} dari {len(owners_meta)})..."
+            if total_pages > 1
+            else "👤 Langkah 1: Pilih Owner..."
+        )
+
         super().__init__(
-            placeholder="👤 Langkah 1: Pilih Owner...",
+            placeholder=placeholder_txt,
             min_values=1,
             max_values=1,
             options=options,
@@ -239,35 +282,63 @@ class RefreshButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        self.parent_view.reload_metadata()
+        self.parent_view.reload_metadata(force_live=True)
         await self.parent_view.update_panel(interaction, edit_response=True)
 
 
 class ControlPanelView(discord.ui.View):
-    def __init__(self, user):
+    def __init__(self, user, initial_owner=None):
         super().__init__(timeout=600)
         self.user = user
         self.selected_aplikator = "all"
-        self.selected_owner = None
+        self.selected_owner = initial_owner
         self.owners_meta = []
-        self.reload_metadata()
+        self.current_page = 0
+        self.total_pages = 1
+        self.reload_metadata(force_live=False)
 
-    def reload_metadata(self):
+    def rebuild_components(self):
         self.clear_items()
-        self.owners_meta = get_owners_with_metadata()
-        if self.owners_meta and not self.selected_owner:
-            self.selected_owner = self.owners_meta[0]["owner"]
-            
-        self.owner_select = OwnerSelect(self, self.owners_meta)
+        self.owner_select = OwnerSelect(self, self.owners_meta, page=self.current_page)
         self.aplikator_select = AplikatorSelect(self)
         self.generate_btn = GenerateButton(self)
         self.refresh_btn = RefreshButton(self)
 
-        # Urutan baris: Row 0 (Owner), Row 1 (Aplikator Dinamis), Row 2 (Tombol Aksi)
+        # Row 0: Owner Select
         self.add_item(self.owner_select)
+        # Row 1: Aplikator Select (Dinamis)
         self.add_item(self.aplikator_select)
+        # Row 2: Tombol Aksi
         self.add_item(self.generate_btn)
         self.add_item(self.refresh_btn)
+
+        # Row 3: Tombol Navigasi Halaman jika total_pages > 1
+        if self.total_pages > 1:
+            self.prev_btn = PageNavButton(self, direction=-1)
+            self.next_btn = PageNavButton(self, direction=1)
+            self.add_item(self.prev_btn)
+            self.add_item(self.next_btn)
+
+    def reload_metadata(self, force_live=False):
+        self.owners_meta = get_owners_with_metadata(source="vercel", force_live=force_live)
+        self.total_pages = max(1, (len(self.owners_meta) + PAGE_SIZE - 1) // PAGE_SIZE)
+
+        # Jika ada owner yang ditentukan, lompat ke halaman yang memuat owner tersebut
+        if self.selected_owner and self.selected_owner != "__ALL__":
+            matched_idx = -1
+            for idx, m in enumerate(self.owners_meta):
+                if m["owner"].strip().lower() == str(self.selected_owner).strip().lower():
+                    self.selected_owner = m["owner"]
+                    matched_idx = idx
+                    break
+            if matched_idx != -1:
+                self.current_page = matched_idx // PAGE_SIZE
+        elif not self.selected_owner and self.owners_meta:
+            self.selected_owner = self.owners_meta[0]["owner"]
+            self.current_page = 0
+
+        self.current_page = max(0, min(self.current_page, self.total_pages - 1))
+        self.rebuild_components()
 
     def build_embed(self):
         embed = discord.Embed(
@@ -330,8 +401,11 @@ class ControlPanelView(discord.ui.View):
 
         embed.add_field(name="⚙️ Status Pipeline", value=status_text, inline=False)
 
+        total_info = f"Total {len(self.owners_meta)} Owner"
+        if self.total_pages > 1:
+            total_info += f" • Hal {self.current_page + 1}/{self.total_pages}"
         embed.set_footer(
-            text=f"Diminta oleh {self.user.display_name} • Superfood Tech Engine (Vercel Sheet)",
+            text=f"Diminta oleh {self.user.display_name} • {total_info} • Superfood Tech Engine (Vercel Sheet)",
             icon_url=self.user.display_avatar.url
         )
         return embed
@@ -614,11 +688,37 @@ bot = OutletInfoBot()
 
 
 @bot.tree.command(name="generate", description="🚀 Buka Control Panel untuk Generate & Upload Outlet Info ke Google Drive")
-async def generate_slash(interaction: discord.Interaction):
+@app_commands.describe(owner="Nama Owner (opsional: ketik untuk mencari nama owner dari Vercel Sheet)")
+async def generate_slash(interaction: discord.Interaction, owner: str = None):
     """Menampilkan Control Panel Interaktif."""
-    view = ControlPanelView(interaction.user)
+    view = ControlPanelView(interaction.user, initial_owner=owner)
     embed = view.build_embed()
     await interaction.response.send_message(embed=embed, view=view)
+
+
+@generate_slash.autocomplete("owner")
+async def generate_owner_autocomplete(interaction: discord.Interaction, current: str):
+    owners = get_owners_with_metadata(source="vercel")
+    choices = []
+    current_lower = (current or "").strip().lower()
+
+    # Opsi Batch Semua Owner
+    if not current_lower or "semua" in current_lower or "all" in current_lower:
+        choices.append(app_commands.Choice(name="📦 [Semua Owner Terdaftar]", value="__ALL__"))
+
+    for m in owners:
+        owner_name = m["owner"]
+        brand = m.get("brand", "")
+        # Filter matching nama owner atau brand
+        if not current_lower or current_lower in owner_name.lower() or (brand and current_lower in brand.lower()):
+            label = f"{owner_name} ({brand})" if brand else owner_name
+            if len(label) > 100:
+                label = label[:97] + "..."
+            choices.append(app_commands.Choice(name=label, value=owner_name))
+            if len(choices) >= 25:
+                break
+
+    return choices
 
 
 @bot.tree.command(name="status", description="📊 Cek status data master GoFood, Grab & Shopee saat ini")

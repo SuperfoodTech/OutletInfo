@@ -1730,7 +1730,31 @@ def get_session(username=None, password=None, phone=None, headless=None, close_b
             
             # ── Step 5: Decision - Switch or Stay? ──
             do_switch = False
-            if target_name:
+            is_unknown = (not active_name) or ("unknown" in active_name.lower()) or (active_name.strip() == "")
+
+            if is_unknown:
+                log.warning(f"⚠️ [MERCHANT] Terdeteksi status merchant tidak valid ('{active_name}'). Segera menjalankan recovery login ulang master allvbadmin...")
+                recovered = _deliberate_logout_and_relogin(
+                    driver,
+                    username=username,
+                    password=password,
+                    phone=phone,
+                )
+                if recovered:
+                    log.info("🔄 [MERCHANT] Recovery login berhasil. Memilih merchant target...")
+                    if target_name:
+                        success = auto_switch_merchant(driver, target_name, is_retry=True)
+                    else:
+                        success = _handle_merchant_selection(driver, active_id_forced=None, interactive=interactive)
+                else:
+                    log.error("❌ Recovery login gagal. Melanjutkan penanganan error...")
+                    success = False
+
+                if not success:
+                    log.error("❌ Merchant selection failed after recovery.")
+                    driver.quit()
+                    continue
+            elif target_name:
                 if active_name.lower() != target_name.lower():
                     log.info(f"📍 [MERCHANT] Current: {active_name} | Target: {target_name}. Switching...")
                     do_switch = True
@@ -1759,7 +1783,7 @@ def get_session(username=None, password=None, phone=None, headless=None, close_b
                         )
                         if recovered:
                             log.info("🔄 [MERCHANT] Recovery successful. Retrying merchant switch...")
-                            success = auto_switch_merchant(driver, target_name, is_retry=(attempt == 2))
+                            success = auto_switch_merchant(driver, target_name, is_retry=True)
                         else:
                             log.error("❌ Recovery failed.")
                             success = False

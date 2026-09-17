@@ -23,6 +23,7 @@ import json
 import base64
 import argparse
 import datetime
+import time
 import urllib.request
 import io
 import requests
@@ -45,10 +46,11 @@ CACHE_DIR = BASE_DIR / "cache"
 OUTPUT_OWNERS_DIR = BASE_DIR / "output_owners"
 TEMPLATE_PATH = BASE_DIR / "YYYY-MM-DD HH_MM Nama Pemilik.xlsx"
 
-GOOGLE_SHEET_VERCEL_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTprbPPf_J5gAVL3PYeHbbdl5ZXQvb17HY2lJGPI2xg13Ly3AGT8eYHLYmU_m1NdtkBVg-qUGv1BoEE/pub?output=csv"
-
-# Muat variabel lingkungan
 load_dotenv(BASE_DIR / ".env")
+GOOGLE_SHEET_VERCEL_URL = os.getenv(
+    "GOOGLE_SHEET_VERCEL_URL",
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vTprbPPf_J5gAVL3PYeHbbdl5ZXQvb17HY2lJGPI2xg13Ly3AGT8eYHLYmU_m1NdtkBVg-qUGv1BoEE/pub?output=csv"
+)
 APP_SCRIPT_URL = os.getenv("APP_SCRIPT_URL", "")
 
 
@@ -200,7 +202,7 @@ def load_shopee_data():
     return pd.DataFrame()
 
 
-def load_vercel_data():
+def load_vercel_data(force_live=False):
     """
     Memuat data outlet dari Google Sheet Vercel (Live CSV).
     Menyimpan cache lokal di cache/vercel_sheet_cache.csv untuk fallback offline.
@@ -211,20 +213,33 @@ def load_vercel_data():
     csv_text = ""
     # 1. Coba fetch live dari Google Sheet jika memungkinkan
     try:
-        req = urllib.request.Request(GOOGLE_SHEET_VERCEL_URL, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        url = GOOGLE_SHEET_VERCEL_URL
+        sep = "&" if "?" in url else "?"
+        # Cache busting timestamp untuk melewati caching edge/CDN Google Spreadsheets
+        url_busted = f"{url}{sep}_cb={int(time.time())}"
+        req = urllib.request.Request(
+            url_busted,
+            headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
             csv_text = resp.read().decode('utf-8', errors='replace')
         if csv_text.strip():
             with open(cache_file, "w", encoding="utf-8") as f:
                 f.write(csv_text)
+            print(f"   ✓ [VERCEL] Berhasil memuat data live dari Google Sheet ({len(csv_text)} bytes).")
     except Exception as e:
         print(f"⚠️ Fetch live Vercel Sheet melewati batas waktu / offline ({e}). Menggunakan cache lokal.")
 
-    # 2. Fallback ke file cache lokal
+    # 2. Fallback ke file cache lokal jika live gagal
     if not csv_text and cache_file.exists():
         try:
             with open(cache_file, "r", encoding="utf-8") as f:
                 csv_text = f.read()
+            print(f"   ℹ️ [VERCEL] Menggunakan cache lokal ({cache_file.name}).")
         except Exception:
             pass
 
@@ -429,14 +444,14 @@ def upload_file_to_drive(file_path, owner_name, app_script_url):
         return False, {"error": str(e)}
 
 
-def get_owners_with_metadata(source="vercel"):
+def get_owners_with_metadata(source="vercel", force_live=False):
     """
     Mengambil daftar owner beserta informasi outlet dan timestamp file terbaru.
     source: 'vercel' (default) menggunakan live CSV Vercel Sheet,
             'master' menggunakan master lokal.
     """
     if source == "vercel":
-        combined = load_vercel_data()
+        combined = load_vercel_data(force_live=force_live)
     else:
         df_go = load_gofood_data()
         df_grab = load_grab_data()
