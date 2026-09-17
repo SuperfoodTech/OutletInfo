@@ -761,21 +761,44 @@ def _init_driver(headless: bool):
         options.add_argument(f"--user-data-dir={profile_dir.resolve()}")
         options.add_argument(f"--profile-directory=profile_{account_name}")
 
+    # Extract actual user-data-dir from options (handles patches like custom_add_argument)
+    actual_profile_dir = profile_dir
+    for arg in options.arguments:
+        if arg.startswith("--user-data-dir="):
+            actual_profile_dir = Path(arg.split("=", 1)[1])
+            break
+
     # Delete SingletonLock if it exists to avoid SessionNotCreatedException on Linux
-    singleton_lock = profile_dir / "SingletonLock"
-    if singleton_lock.exists() or singleton_lock.is_symlink():
-        try:
-            singleton_lock.unlink(missing_ok=True)
-            log.info(f"🧹 Removed Chrome SingletonLock at {singleton_lock}")
-        except Exception as e:
-            log.warning(f"⚠️ Failed to remove SingletonLock: {e}")
+    for lk_dir in [actual_profile_dir, profile_dir]:
+        if lk_dir.exists():
+            for lock_name in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
+                lock_file = lk_dir / lock_name
+                try:
+                    if lock_file.exists() or lock_file.is_symlink():
+                        lock_file.unlink(missing_ok=True)
+                        log.info(f"🧹 Removed Chrome lock at {lock_file}")
+                except Exception as e:
+                    log.warning(f"⚠️ Failed to remove {lock_file}: {e}")
 
-    # Check for system Chromium & ChromeDriver (Linux / ARM64 / Docker)
-    chromium_path = "/usr/lib/chromium/chromium" if os.path.exists("/usr/lib/chromium/chromium") else ("/usr/bin/chromium" if os.path.exists("/usr/bin/chromium") else None)
-    chromedriver_path = "/usr/bin/chromedriver" if os.path.exists("/usr/bin/chromedriver") else ("/usr/lib/chromium/chromedriver" if os.path.exists("/usr/lib/chromium/chromedriver") else None)
+    # Check for system Chrome / Chromium & ChromeDriver (Linux / ARM64 / Docker)
+    chrome_candidates = [
+        "/usr/bin/google-chrome",
+        "/opt/google/chrome/chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/lib/chromium/chromium",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ]
+    system_chrome_path = next((p for p in chrome_candidates if os.path.exists(p)), None)
+    if system_chrome_path:
+        options.binary_location = system_chrome_path
 
-    if chromium_path:
-        options.binary_location = chromium_path
+    chromedriver_candidates = [
+        "/usr/bin/chromedriver",
+        "/usr/lib/chromium/chromedriver",
+        "/usr/lib/chromium-browser/chromedriver",
+    ]
+    chromedriver_path = next((p for p in chromedriver_candidates if os.path.exists(p)), None)
 
     driver = None
     if chromedriver_path:
@@ -802,12 +825,12 @@ def _init_driver(headless: bool):
                 s.close()
 
                 cmd = [
-                    chromium_path or "chromium",
+                    system_chrome_path or "google-chrome",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     f"--remote-debugging-port={cdp_port}",
-                    f"--user-data-dir={profile_dir.resolve()}",
-                    "--profile-directory=shopee_profile"
+                    f"--user-data-dir={actual_profile_dir.resolve()}",
+                    "--profile-directory=profile_allvbadmin"
                 ]
                 if headless:
                     cmd.append("--headless=new")

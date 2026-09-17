@@ -750,6 +750,17 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, tar
         except Exception:
             pass
 
+    # Clean up stale Singleton locks in Chrome profile before launching browser
+    for lk_dir in [CHROME_PROFILE_DIR, CHROME_PROFILE_DIR / "profile_allvbadmin"]:
+        if lk_dir.exists():
+            for lk in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
+                f = lk_dir / lk
+                if f.exists() or f.is_symlink():
+                    try:
+                        f.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
     print(f"[*] Membuka browser (headless={headless}) dan memilih merchant: '{target_name}' (ID: {target_merchant_id or '-'}, staffTobUid: {target_tob_uid or '-'}, Occ: {occurrence_index})...")
     
     session_data = browser.get_session(
