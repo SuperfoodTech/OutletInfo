@@ -16,6 +16,7 @@ import os
 import sys
 import asyncio
 import datetime
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -85,9 +86,9 @@ def build_aplikator_options(available_platforms, current_selected="all"):
     """Menyusun opsi dropdown aplikator secara dinamis sesuai platform yang dimiliki owner."""
     options = []
     platform_map = {
-        "gofood": ("GoFood Saja", "🔴"),
-        "grab": ("GrabFood Saja", "🟢"),
-        "shopee": ("ShopeeFood Saja", "🟠")
+        "gofood": ("GoFood", "🔴"),
+        "grab": ("GrabFood", "🟢"),
+        "shopee": ("ShopeeFood", "🟠")
     }
 
     # Jika memiliki lebih dari 1 platform, tambahkan opsi "Semua Platform"
@@ -113,9 +114,25 @@ def build_aplikator_options(available_platforms, current_selected="all"):
             ))
 
     valid_values = [opt.value for opt in options]
-    chosen = current_selected if current_selected in valid_values else valid_values[0]
+    
+    # Normalisasi current_selected menjadi list
+    if isinstance(current_selected, str):
+        selected_list = [current_selected]
+    elif isinstance(current_selected, (list, tuple, set)):
+        selected_list = list(current_selected)
+    else:
+        selected_list = ["all"]
+
+    # Filter yang benar-benar ada di options
+    chosen = [v for v in selected_list if v in valid_values]
+    if not chosen:
+        chosen = ["all"] if "all" in valid_values else [valid_values[0]]
+    elif "all" in chosen and len(chosen) > 1:
+        # Jika 'all' tercampur dengan yang lain, prioritaskan 'all'
+        chosen = ["all"]
+
     for opt in options:
-        opt.default = (opt.value == chosen)
+        opt.default = (opt.value in chosen)
 
     return options, chosen
 
@@ -127,9 +144,9 @@ class AplikatorSelect(discord.ui.Select):
         options, chosen = build_aplikator_options(platforms, parent_view.selected_aplikator)
         parent_view.selected_aplikator = chosen
         super().__init__(
-            placeholder="📌 Langkah 2: Pilih Aplikator...",
+            placeholder="📌 Langkah 2: Pilih Aplikator (Bisa Multi-Select)...",
             min_values=1,
-            max_values=1,
+            max_values=max(1, len(options)),
             options=options,
             row=1
         )
@@ -140,11 +157,32 @@ class AplikatorSelect(discord.ui.Select):
         options, chosen = build_aplikator_options(platforms, self.parent_view.selected_aplikator)
         self.parent_view.selected_aplikator = chosen
         self.options = options
+        self.max_values = max(1, len(options))
 
     async def callback(self, interaction: discord.Interaction):
-        self.parent_view.selected_aplikator = self.values[0]
+        prev = self.parent_view.selected_aplikator
+        if isinstance(prev, str):
+            prev = [prev]
+
+        new_values = self.values
+        # Mutually exclusive logic:
+        # Jika 'all' ada di new_values:
+        # 1. Jika sebelumnya 'all' belum dipilih, berarti user baru saja memilih 'all' -> jadikan hanya ['all']
+        # 2. Jika sebelumnya 'all' sudah dipilih dan user memilih platform spesifik -> hapus 'all', pakai platform spesifik
+        if "all" in new_values:
+            if "all" not in prev:
+                chosen = ["all"]
+            else:
+                chosen = [v for v in new_values if v != "all"]
+                if not chosen:
+                    chosen = ["all"]
+        else:
+            chosen = new_values if new_values else ["all"]
+
+        self.parent_view.selected_aplikator = chosen
         for opt in self.options:
-            opt.default = (opt.value == self.values[0])
+            opt.default = (opt.value in chosen)
+
         await self.parent_view.update_panel(interaction)
 
 
@@ -286,6 +324,50 @@ class RefreshButton(discord.ui.Button):
         await self.parent_view.update_panel(interaction, edit_response=True)
 
 
+class CancelButton(discord.ui.Button):
+    def __init__(self, parent_view):
+        self.parent_view = parent_view
+        super().__init__(
+            label="Batal",
+            style=discord.ButtonStyle.danger,
+            emoji="✖",
+            row=2
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.parent_view.user.id:
+            await interaction.response.send_message("❌ Anda tidak memiliki izin untuk membatalkan panel ini.", ephemeral=True)
+            return
+
+        cancel_embed = discord.Embed(
+            title="🛑 PANEL DIBATALKAN",
+            description=f"Panel kontrol telah dibatalkan dan ditutup oleh {interaction.user.mention}.",
+            color=THEME_ERROR,
+            timestamp=datetime.datetime.now()
+        )
+        self.parent_view.stop()
+        await interaction.response.edit_message(embed=cancel_embed, view=None)
+
+
+class RunningProcessView(discord.ui.View):
+    """View interaktif yang tampil saat pipeline sedang berjalan, menyediakan tombol Batal."""
+    def __init__(self, user, cancel_event):
+        super().__init__(timeout=900)
+        self.user = user
+        self.cancel_event = cancel_event
+
+    @discord.ui.button(label="Batalkan Proses", style=discord.ButtonStyle.danger, emoji="🛑", custom_id="btn_cancel_running_process")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("❌ Hanya pengguna yang memulai proses yang dapat membatalkannya.", ephemeral=True)
+            return
+
+        button.disabled = True
+        button.label = "Sedang Membatalkan..."
+        self.cancel_event.set()
+        await interaction.response.edit_message(view=self)
+
+
 class PartialResultView(discord.ui.View):
     """View interaktif saat generasi selesai sebagian dengan opsi retry terfokus."""
     def __init__(self, owner, aplikator, missing_items, folder_url, doc_url, owners_meta, retry_count=0):
@@ -337,7 +419,9 @@ class PartialResultView(discord.ui.View):
         except Exception:
             pass
 
-        # Siapkan embed live progress retry
+        # Siapkan embed live progress retry dengan tombol Batal
+        cancel_event = threading.Event()
+        running_view = RunningProcessView(user=interaction.user, cancel_event=cancel_event)
         terminal_lines = [f"Sedang mengulang penarikan untuk {len(self.missing_items)} outlet yang gagal..."]
         progress_embed = discord.Embed(
             title="🔄 MENARIK ULANG OUTLET GAGAL",
@@ -349,14 +433,14 @@ class PartialResultView(discord.ui.View):
             timestamp=datetime.datetime.now()
         )
         progress_embed.add_field(name="💻 Terminal Logs", value="```ansi\n" + "\n".join(terminal_lines) + "\n```", inline=False)
-        await interaction.edit_original_response(embed=progress_embed, view=None)
+        await interaction.edit_original_response(embed=progress_embed, view=running_view)
 
         loop = asyncio.get_running_loop()
         edit_lock = asyncio.Lock()
         is_finished = False
 
         async def discord_progress_callback(pct, msg):
-            if is_finished:
+            if is_finished or cancel_event.is_set():
                 return
             terminal_lines.append(f"[{pct:>3}%] {msg}")
             if len(terminal_lines) > 6:
@@ -365,7 +449,7 @@ class PartialResultView(discord.ui.View):
             progress_embed.set_field_at(0, name="💻 Terminal Logs", value=f"```ansi\n{log_text}\n```", inline=False)
             async with edit_lock:
                 try:
-                    await interaction.edit_original_response(embed=progress_embed, view=None)
+                    await interaction.edit_original_response(embed=progress_embed, view=running_view)
                 except Exception:
                     pass
 
@@ -381,7 +465,8 @@ class PartialResultView(discord.ui.View):
                 progress_callback=cb,
                 lock_timeout=0,
                 requested_by=f"{interaction.user.display_name} (Retry)",
-                retry_targets=self.missing_items
+                retry_targets=self.missing_items,
+                cancel_event=cancel_event
             )
 
         try:
@@ -391,6 +476,18 @@ class PartialResultView(discord.ui.View):
 
         is_finished = True
         await asyncio.sleep(0.8)
+
+        if cancel_event.is_set() or res.get("error") == "CANCELLED":
+            cancel_embed = discord.Embed(
+                title="🛑 RETRY TELAH DIBATALKAN",
+                description=f"Penarikan ulang data untuk **{self.owner}** telah dihentikan atas permintaan pengguna.",
+                color=THEME_ERROR,
+                timestamp=datetime.datetime.now()
+            )
+            cancel_embed.set_footer(text="Superfood Tech • Retry Dibatalkan", icon_url=DRIVE_ICON_URL)
+            async with edit_lock:
+                await interaction.edit_original_response(embed=cancel_embed, view=None)
+            return
 
         if res.get("success"):
             new_is_partial = res.get("is_partial", False) or res.get("status") == "PARTIAL"
@@ -498,6 +595,7 @@ class ControlPanelView(discord.ui.View):
         self.aplikator_select = AplikatorSelect(self)
         self.generate_btn = GenerateButton(self)
         self.refresh_btn = RefreshButton(self)
+        self.cancel_btn = CancelButton(self)
 
         # Row 0: Owner Select
         self.add_item(self.owner_select)
@@ -506,6 +604,7 @@ class ControlPanelView(discord.ui.View):
         # Row 2: Tombol Aksi
         self.add_item(self.generate_btn)
         self.add_item(self.refresh_btn)
+        self.add_item(self.cancel_btn)
 
         # Row 3: Tombol Navigasi Halaman jika total_pages > 1
         if self.total_pages > 1:
@@ -556,13 +655,22 @@ class ControlPanelView(discord.ui.View):
             elif p == "grab": names.append("Grab")
             elif p == "shopee": names.append("Shopee")
 
-        app_names = {
-            "all": f"🌐 Semua Platform ({' + '.join(names)})" if len(names) > 1 else f"🌐 Semua Platform ({names[0]})" if names else "🌐 Semua Platform",
-            "gofood": "🔴 GoFood Saja",
-            "grab": "🟢 GrabFood Saja",
-            "shopee": "🟠 ShopeeFood Saja"
+        # Format label aplikator terpilih (bisa single atau kombinasi multi-select)
+        selected = self.selected_aplikator
+        if isinstance(selected, str):
+            selected = [selected]
+
+        platform_icons = {
+            "gofood": "🔴 GoFood",
+            "grab": "🟢 GrabFood",
+            "shopee": "🟠 ShopeeFood"
         }
-        aplikator_label = app_names.get(self.selected_aplikator, self.selected_aplikator)
+
+        if "all" in selected or not selected:
+            aplikator_label = f"🌐 Semua Platform ({' + '.join(names)})" if len(names) > 1 else (f"🌐 Semua Platform ({names[0]})" if names else "🌐 Semua Platform")
+        else:
+            selected_labels = [platform_icons.get(p, p.title()) for p in selected if p in platform_icons]
+            aplikator_label = " + ".join(selected_labels) if selected_labels else "🌐 Semua Platform"
 
         # Info owner terpilih dan brand
         owner_brand = ""
@@ -667,8 +775,10 @@ class ControlPanelView(discord.ui.View):
             inline=False
         )
 
-        # view=None: Menghilangkan seluruh dropdown & tombol dari pesan saat generate dimulai
-        message = await interaction.edit_original_response(embed=progress_embed, view=None)
+        # Pasang RunningProcessView agar pengguna dapat membatalkan proses yang sedang berjalan
+        cancel_event = threading.Event()
+        running_view = RunningProcessView(user=self.user, cancel_event=cancel_event)
+        message = await interaction.edit_original_response(embed=progress_embed, view=running_view)
 
         log_buffer = [f"[{datetime.datetime.now().strftime('%H:%M:%S')}] \u001b[34m[START]\u001b[0m Pipeline dimulai."]
         last_update_time = datetime.datetime.now()
@@ -678,7 +788,7 @@ class ControlPanelView(discord.ui.View):
         async def discord_progress_callback(percent: int, log_msg: str):
             nonlocal last_update_time
             # Jangan perbarui progress_embed lagi jika proses sudah selesai atau mencapai 100%
-            if is_finished or percent >= 100:
+            if is_finished or percent >= 100 or cancel_event.is_set():
                 return
 
             now_str = datetime.datetime.now().strftime("%H:%M:%S")
@@ -686,7 +796,7 @@ class ControlPanelView(discord.ui.View):
             # Beri warna ANSI
             if "Sukses" in log_msg or "✅" in log_msg:
                 colored = f"[{now_str}] \u001b[32m[SUCCESS]\u001b[0m {log_msg}"
-            elif "⚠️" in log_msg or "Gagal" in log_msg or "❌" in log_msg:
+            elif "⚠️" in log_msg or "Gagal" in log_msg or "❌" in log_msg or "🛑" in log_msg:
                 colored = f"[{now_str}] \u001b[31m[WARN]\u001b[0m {log_msg}"
             elif "Mengunggah" in log_msg:
                 colored = f"[{now_str}] \u001b[35m[UPLOAD]\u001b[0m {log_msg}"
@@ -710,7 +820,7 @@ class ControlPanelView(discord.ui.View):
                 )
                 async with edit_lock:
                     try:
-                        await interaction.edit_original_response(embed=progress_embed, view=None)
+                        await interaction.edit_original_response(embed=progress_embed, view=running_view)
                     except Exception as e:
                         print(f"⚠️ Abaikan error minor progress edit: {e}")
 
@@ -728,7 +838,8 @@ class ControlPanelView(discord.ui.View):
                 live_scrape=True,
                 progress_callback=cb,
                 lock_timeout=0,
-                requested_by=self.user.display_name
+                requested_by=self.user.display_name,
+                cancel_event=cancel_event
             )
 
         try:
@@ -739,6 +850,19 @@ class ControlPanelView(discord.ui.View):
         # Tandai proses selesai & beri jeda sejenak agar request progress terakhir di event loop tuntas
         is_finished = True
         await asyncio.sleep(0.8)
+
+        # Cek jika proses dibatalkan oleh pengguna
+        if cancel_event.is_set() or result.get("error") == "CANCELLED":
+            cancel_embed = discord.Embed(
+                title="🛑 PROSES TELAH DIBATALKAN",
+                description=f"Proses pembuatan data untuk **{self.selected_owner}** telah dihentikan atas permintaan pengguna.",
+                color=THEME_ERROR,
+                timestamp=datetime.datetime.now()
+            )
+            cancel_embed.set_footer(text="Superfood Tech • Pipeline Dibatalkan", icon_url=DRIVE_ICON_URL)
+            async with edit_lock:
+                await interaction.edit_original_response(embed=cancel_embed, view=None)
+            return
 
         # Selesai: Tampilkan Embed Sukses / Gagal
         if result.get("success"):
