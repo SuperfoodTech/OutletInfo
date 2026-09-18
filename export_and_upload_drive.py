@@ -534,10 +534,12 @@ def get_owners_with_metadata(source="vercel", force_live=False):
     return results
 
 
-def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150):
-    """Menjalankan subprocess dengan streaming output real-time dan batas waktu yang aman agar tidak stuck."""
+def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_event=None):
+    """Menjalankan subprocess dengan streaming output real-time, dukungan pembatalan cepat, dan batas waktu yang aman."""
     import subprocess
     import time
+    import signal
+    import selectors
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     try:
         p = subprocess.Popen(
@@ -547,40 +549,74 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150):
             text=True,
             cwd=str(cwd),
             env=env,
-            bufsize=1
+            bufsize=1,
+            preexec_fn=os.setsid
         )
+        sel = selectors.DefaultSelector()
+        sel.register(p.stdout, selectors.EVENT_READ)
         start_time = time.time()
+
         while True:
+            # Periksa apakah proses dibatalkan oleh pengguna (responsif < 0.2 detik)
+            if cancel_event and cancel_event.is_set():
+                try:
+                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                except Exception:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+                on_log("🛑 Proses dibatalkan oleh pengguna.")
+                try:
+                    sel.unregister(p.stdout)
+                    sel.close()
+                except Exception:
+                    pass
+                return -999
+
             # Cegah proses menggantung melebihi timeout
             if time.time() - start_time > timeout_sec:
                 try:
-                    p.kill()
+                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                 except Exception:
-                    pass
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
                 on_log(f"⏱️ Melewati batas waktu ({timeout_sec}s). Melanjutkan ke tahap berikutnya...")
                 break
-            
-            line = p.stdout.readline()
-            if not line:
+
+            events = sel.select(timeout=0.2)
+            if events:
+                line = p.stdout.readline()
+                if not line:
+                    if p.poll() is not None:
+                        break
+                    continue
+                
+                line_s = line.strip()
+                if not line_s:
+                    continue
+                    
+                # Abaikan garis pembatas dekoratif
+                if line_s.startswith("===") or line_s.startswith("---") or line_s.startswith("───"):
+                    continue
+
+                # Tampilkan pesan jika ada indikator status atau cocok kata kunci
+                is_status = any(line_s.startswith(p) for p in ("[*]", "[✓]", "🚀", "🌐", "➡️", "📧", "⏳", "✅", "⚠️", "❌", "🎉", "⚡", "🏢", "📍"))
+                has_kw = any(k.lower() in line_s.lower() for k in keywords)
+                if is_status or has_kw:
+                    on_log(line_s[:85])
+            else:
                 if p.poll() is not None:
                     break
-                time.sleep(0.05)
-                continue
-                
-            line_s = line.strip()
-            if not line_s:
-                continue
-                
-            # Abaikan garis pembatas dekoratif
-            if line_s.startswith("===") or line_s.startswith("---") or line_s.startswith("───"):
-                continue
 
-            # Tampilkan pesan jika ada indikator status atau cocok kata kunci
-            is_status = any(line_s.startswith(p) for p in ("[*]", "[✓]", "🚀", "🌐", "➡️", "📧", "⏳", "✅", "⚠️", "❌", "🎉", "⚡", "🏢", "📍"))
-            has_kw = any(k.lower() in line_s.lower() for k in keywords)
-            if is_status or has_kw:
-                on_log(line_s[:85])
-                
+        try:
+            sel.unregister(p.stdout)
+            sel.close()
+        except Exception:
+            pass
+
         p.poll()
         return p.returncode or 0
     except Exception as e:
@@ -588,11 +624,12 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150):
         return -1
 
 
-def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, retry_targets=None):
+def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, retry_targets=None, cancel_event=None):
     """
     Menjalankan live scraping untuk GoFood, GrabFood, dan ShopeeFood secara berurutan.
     progress_cb: function(percent: int, log_line: str)
     retry_targets: list of dicts (jika hanya menargetkan outlet/aplikator tertentu yang gagal)
+    cancel_event: threading.Event opsional untuk membatalkan proses secara langsung
     Mengembalikan dict status hasil scraping per-aplikator.
     """
     clean_owner = owner_name.strip()
@@ -633,6 +670,9 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
 
     # 1. LIVE SCRAPING GOFOOD
     if should_run_app("gofood"):
+        if cancel_event and cancel_event.is_set():
+            send_log(100, "🛑 Penarikan dibatalkan oleh pengguna.")
+            return scrape_status
         send_log(15, f"🚀 [GoFood] Memulai penarikan live untuk '{clean_owner}'...")
         headless_go = os.getenv("HEADLESS_GOFOOD", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
         cmd = [
@@ -650,9 +690,13 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             cwd=GOFOOD_DIR,
             keywords=("Store ID", "Berhasil", "Portal", "Login", "Owner", "Restricted", "Memproses", "OTP", "Filter", "Gagal"),
             on_log=lambda m: send_log(25, f"[GoFood] {m}"),
-            timeout_sec=160
+            timeout_sec=160,
+            cancel_event=cancel_event
         )
         scrape_status["gofood"] = rc
+        if cancel_event and cancel_event.is_set():
+            send_log(100, "🛑 Penarikan dibatalkan oleh pengguna.")
+            return scrape_status
         if rc == 0:
             send_log(35, f"✅ [GoFood] Selesai memproses '{clean_owner}'.")
         else:
@@ -660,6 +704,9 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
 
     # 2. LIVE SCRAPING GRABFOOD
     if should_run_app("grab"):
+        if cancel_event and cancel_event.is_set():
+            send_log(100, "🛑 Penarikan dibatalkan oleh pengguna.")
+            return scrape_status
         send_log(40, f"🚀 [GrabFood] Memulai penarikan live untuk '{clean_owner}'...")
         headless_grab = os.getenv("HEADLESS_GRAB", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
         cmd = [
@@ -676,9 +723,13 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             cwd=GRAB_DIR,
             keywords=("Group ID", "Berhasil", "Target", "Portal", "Login", "Store", "Bank", "Owner", "Filter", "Gagal", "Password", "Salah", "Master@123", "fallback", "Sukses"),
             on_log=lambda m: send_log(55, f"[Grab] {m}"),
-            timeout_sec=180
+            timeout_sec=180,
+            cancel_event=cancel_event
         )
         scrape_status["grab"] = rc
+        if cancel_event and cancel_event.is_set():
+            send_log(100, "🛑 Penarikan dibatalkan oleh pengguna.")
+            return scrape_status
         if rc == 0:
             send_log(65, f"✅ [GrabFood] Selesai memproses '{clean_owner}'.")
         else:
@@ -686,6 +737,9 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
 
     # 3. LIVE SCRAPING SHOPEEFOOD
     if should_run_app("shopee"):
+        if cancel_event and cancel_event.is_set():
+            send_log(100, "🛑 Penarikan dibatalkan oleh pengguna.")
+            return scrape_status
         send_log(68, f"🚀 [ShopeeFood] Memeriksa akun Shopee untuk '{clean_owner}'...")
         try:
             v_df = load_vercel_data()
@@ -707,6 +761,9 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             if merchant_names:
                 headless_shopee = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
                 for idx, merchant_name in enumerate(merchant_names, start=1):
+                    if cancel_event and cancel_event.is_set():
+                        send_log(100, "🛑 Penarikan ShopeeFood dibatalkan oleh pengguna.")
+                        break
                     send_log(70, f"[ShopeeFood] Menarik data toko [{idx}/{len(merchant_names)}] '{merchant_name}'...")
                     cmd = [
                         python_bin,
@@ -720,7 +777,8 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                         cwd=SHOPEE_DIR,
                         keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai"),
                         on_log=lambda m: send_log(74, f"[Shopee] {m}"),
-                        timeout_sec=180
+                        timeout_sec=180,
+                        cancel_event=cancel_event
                     )
                     scrape_status["shopee_merchants"][merchant_name] = rc_sh
                 scrape_status["shopee"] = 0 if all(c == 0 for c in scrape_status["shopee_merchants"].values()) else 1
@@ -811,7 +869,7 @@ def verify_extraction_completeness(expected_df, owner_df, scrape_status=None):
     return missing_items
 
 
-def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source="vercel", live_scrape=True, progress_callback=None, lock_timeout=0, requested_by="System", retry_targets=None):
+def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source="vercel", live_scrape=True, progress_callback=None, lock_timeout=0, requested_by="System", retry_targets=None, cancel_event=None):
     """
     Pipeline pembuatan file per-owner dan upload Drive dengan progress callback.
     Menggunakan Vercel Sheet sebagai sumber utama dan memperkaya data dengan hasil live scraping.
@@ -823,6 +881,7 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
     progress_callback: function(percent: int, log_line: str)
     lock_timeout: int (detik untuk menunggu lock, 0 = fail-fast)
     requested_by: str (nama user / caller)
+    cancel_event: threading.Event opsional untuk pembatalan cepat
     """
     def log(pct, msg):
         if progress_callback:
@@ -831,6 +890,10 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
 
     try:
         with JobLock(timeout=lock_timeout, task_info={"owner": owner_name, "user": requested_by, "aplikator": aplikator, "source": source}):
+            if cancel_event and cancel_event.is_set():
+                log(100, "🛑 Pipeline dibatalkan sebelum memulai.")
+                return {"success": False, "error": "CANCELLED", "message": "Dibatalkan oleh pengguna."}
+
             log(10, "Inisialisasi direktori dan template 37 kolom...")
             headers = get_template_headers()
             OUTPUT_OWNERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -839,7 +902,11 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             scrape_status = {}
             if live_scrape and owner_name != "__ALL__":
                 log(12, f"Menjalankan penarikan live data toko untuk '{owner_name}'...")
-                scrape_status = run_live_scraping_for_owner(owner_name, aplikator=aplikator, progress_cb=progress_callback, retry_targets=retry_targets)
+                scrape_status = run_live_scraping_for_owner(owner_name, aplikator=aplikator, progress_cb=progress_callback, retry_targets=retry_targets, cancel_event=cancel_event)
+
+            if cancel_event and cancel_event.is_set():
+                log(100, "🛑 Pipeline dibatalkan oleh pengguna.")
+                return {"success": False, "error": "CANCELLED", "message": "Dibatalkan oleh pengguna."}
 
             # Normalisasi aplikator target
             if isinstance(aplikator, (list, tuple, set)):
@@ -1011,6 +1078,10 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
 
             save_owner_workbook(owner_df, str(file_path), headers)
             log(85, f"File lokal berhasil dibuat: {filename}")
+
+            if cancel_event and cancel_event.is_set():
+                log(100, "🛑 Pipeline dibatalkan sebelum upload Google Drive.")
+                return {"success": False, "error": "CANCELLED", "message": "Dibatalkan oleh pengguna."}
 
             drive_res = {}
             if upload:

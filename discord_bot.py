@@ -16,6 +16,7 @@ import os
 import sys
 import asyncio
 import datetime
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -348,6 +349,25 @@ class CancelButton(discord.ui.Button):
         await interaction.response.edit_message(embed=cancel_embed, view=None)
 
 
+class RunningProcessView(discord.ui.View):
+    """View interaktif yang tampil saat pipeline sedang berjalan, menyediakan tombol Batal."""
+    def __init__(self, user, cancel_event):
+        super().__init__(timeout=900)
+        self.user = user
+        self.cancel_event = cancel_event
+
+    @discord.ui.button(label="Batalkan Proses", style=discord.ButtonStyle.danger, emoji="🛑", custom_id="btn_cancel_running_process")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("❌ Hanya pengguna yang memulai proses yang dapat membatalkannya.", ephemeral=True)
+            return
+
+        button.disabled = True
+        button.label = "Sedang Membatalkan..."
+        self.cancel_event.set()
+        await interaction.response.edit_message(view=self)
+
+
 class PartialResultView(discord.ui.View):
     """View interaktif saat generasi selesai sebagian dengan opsi retry terfokus."""
     def __init__(self, owner, aplikator, missing_items, folder_url, doc_url, owners_meta, retry_count=0):
@@ -399,7 +419,9 @@ class PartialResultView(discord.ui.View):
         except Exception:
             pass
 
-        # Siapkan embed live progress retry
+        # Siapkan embed live progress retry dengan tombol Batal
+        cancel_event = threading.Event()
+        running_view = RunningProcessView(user=interaction.user, cancel_event=cancel_event)
         terminal_lines = [f"Sedang mengulang penarikan untuk {len(self.missing_items)} outlet yang gagal..."]
         progress_embed = discord.Embed(
             title="🔄 MENARIK ULANG OUTLET GAGAL",
@@ -411,14 +433,14 @@ class PartialResultView(discord.ui.View):
             timestamp=datetime.datetime.now()
         )
         progress_embed.add_field(name="💻 Terminal Logs", value="```ansi\n" + "\n".join(terminal_lines) + "\n```", inline=False)
-        await interaction.edit_original_response(embed=progress_embed, view=None)
+        await interaction.edit_original_response(embed=progress_embed, view=running_view)
 
         loop = asyncio.get_running_loop()
         edit_lock = asyncio.Lock()
         is_finished = False
 
         async def discord_progress_callback(pct, msg):
-            if is_finished:
+            if is_finished or cancel_event.is_set():
                 return
             terminal_lines.append(f"[{pct:>3}%] {msg}")
             if len(terminal_lines) > 6:
@@ -427,7 +449,7 @@ class PartialResultView(discord.ui.View):
             progress_embed.set_field_at(0, name="💻 Terminal Logs", value=f"```ansi\n{log_text}\n```", inline=False)
             async with edit_lock:
                 try:
-                    await interaction.edit_original_response(embed=progress_embed, view=None)
+                    await interaction.edit_original_response(embed=progress_embed, view=running_view)
                 except Exception:
                     pass
 
@@ -443,7 +465,8 @@ class PartialResultView(discord.ui.View):
                 progress_callback=cb,
                 lock_timeout=0,
                 requested_by=f"{interaction.user.display_name} (Retry)",
-                retry_targets=self.missing_items
+                retry_targets=self.missing_items,
+                cancel_event=cancel_event
             )
 
         try:
@@ -453,6 +476,18 @@ class PartialResultView(discord.ui.View):
 
         is_finished = True
         await asyncio.sleep(0.8)
+
+        if cancel_event.is_set() or res.get("error") == "CANCELLED":
+            cancel_embed = discord.Embed(
+                title="🛑 RETRY TELAH DIBATALKAN",
+                description=f"Penarikan ulang data untuk **{self.owner}** telah dihentikan atas permintaan pengguna.",
+                color=THEME_ERROR,
+                timestamp=datetime.datetime.now()
+            )
+            cancel_embed.set_footer(text="Superfood Tech • Retry Dibatalkan", icon_url=DRIVE_ICON_URL)
+            async with edit_lock:
+                await interaction.edit_original_response(embed=cancel_embed, view=None)
+            return
 
         if res.get("success"):
             new_is_partial = res.get("is_partial", False) or res.get("status") == "PARTIAL"
@@ -740,8 +775,10 @@ class ControlPanelView(discord.ui.View):
             inline=False
         )
 
-        # view=None: Menghilangkan seluruh dropdown & tombol dari pesan saat generate dimulai
-        message = await interaction.edit_original_response(embed=progress_embed, view=None)
+        # Pasang RunningProcessView agar pengguna dapat membatalkan proses yang sedang berjalan
+        cancel_event = threading.Event()
+        running_view = RunningProcessView(user=self.user, cancel_event=cancel_event)
+        message = await interaction.edit_original_response(embed=progress_embed, view=running_view)
 
         log_buffer = [f"[{datetime.datetime.now().strftime('%H:%M:%S')}] \u001b[34m[START]\u001b[0m Pipeline dimulai."]
         last_update_time = datetime.datetime.now()
@@ -751,7 +788,7 @@ class ControlPanelView(discord.ui.View):
         async def discord_progress_callback(percent: int, log_msg: str):
             nonlocal last_update_time
             # Jangan perbarui progress_embed lagi jika proses sudah selesai atau mencapai 100%
-            if is_finished or percent >= 100:
+            if is_finished or percent >= 100 or cancel_event.is_set():
                 return
 
             now_str = datetime.datetime.now().strftime("%H:%M:%S")
@@ -759,7 +796,7 @@ class ControlPanelView(discord.ui.View):
             # Beri warna ANSI
             if "Sukses" in log_msg or "✅" in log_msg:
                 colored = f"[{now_str}] \u001b[32m[SUCCESS]\u001b[0m {log_msg}"
-            elif "⚠️" in log_msg or "Gagal" in log_msg or "❌" in log_msg:
+            elif "⚠️" in log_msg or "Gagal" in log_msg or "❌" in log_msg or "🛑" in log_msg:
                 colored = f"[{now_str}] \u001b[31m[WARN]\u001b[0m {log_msg}"
             elif "Mengunggah" in log_msg:
                 colored = f"[{now_str}] \u001b[35m[UPLOAD]\u001b[0m {log_msg}"
@@ -783,7 +820,7 @@ class ControlPanelView(discord.ui.View):
                 )
                 async with edit_lock:
                     try:
-                        await interaction.edit_original_response(embed=progress_embed, view=None)
+                        await interaction.edit_original_response(embed=progress_embed, view=running_view)
                     except Exception as e:
                         print(f"⚠️ Abaikan error minor progress edit: {e}")
 
@@ -801,7 +838,8 @@ class ControlPanelView(discord.ui.View):
                 live_scrape=True,
                 progress_callback=cb,
                 lock_timeout=0,
-                requested_by=self.user.display_name
+                requested_by=self.user.display_name,
+                cancel_event=cancel_event
             )
 
         try:
@@ -812,6 +850,19 @@ class ControlPanelView(discord.ui.View):
         # Tandai proses selesai & beri jeda sejenak agar request progress terakhir di event loop tuntas
         is_finished = True
         await asyncio.sleep(0.8)
+
+        # Cek jika proses dibatalkan oleh pengguna
+        if cancel_event.is_set() or result.get("error") == "CANCELLED":
+            cancel_embed = discord.Embed(
+                title="🛑 PROSES TELAH DIBATALKAN",
+                description=f"Proses pembuatan data untuk **{self.selected_owner}** telah dihentikan atas permintaan pengguna.",
+                color=THEME_ERROR,
+                timestamp=datetime.datetime.now()
+            )
+            cancel_embed.set_footer(text="Superfood Tech • Pipeline Dibatalkan", icon_url=DRIVE_ICON_URL)
+            async with edit_lock:
+                await interaction.edit_original_response(embed=cancel_embed, view=None)
+            return
 
         # Selesai: Tampilkan Embed Sukses / Gagal
         if result.get("success"):
