@@ -609,10 +609,19 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             progress_cb(pct, msg)
         print(f"[{pct:>3}%] {msg}")
 
+    # Normalisasi target aplikator (mendukung 'all', list ['gofood', 'grab'], atau string 'gofood,grab')
+    if isinstance(aplikator, (list, tuple, set)):
+        active_apps = {str(a).strip().lower() for a in aplikator if str(a).strip()}
+    elif isinstance(aplikator, str):
+        active_apps = {a.strip().lower() for a in aplikator.split(",") if a.strip()}
+    else:
+        active_apps = {"all"}
+    is_all_apps = ("all" in active_apps) or (not active_apps)
+
     # Cek apakah aplikator masuk dalam target eksekusi
     def should_run_app(app_key):
         if retry_targets is None:
-            return aplikator in ("all", app_key)
+            return is_all_apps or (app_key in active_apps)
         target_apps = [str(t.get("aplikator", "")).lower() for t in retry_targets]
         if app_key == "gofood" and any("go" in a for a in target_apps):
             return True
@@ -832,20 +841,30 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                 log(12, f"Menjalankan penarikan live data toko untuk '{owner_name}'...")
                 scrape_status = run_live_scraping_for_owner(owner_name, aplikator=aplikator, progress_cb=progress_callback, retry_targets=retry_targets)
 
-            log(78, f"Membaca data sumber ({source.upper()}) untuk aplikator: {aplikator.upper()}...")
+            # Normalisasi aplikator target
+            if isinstance(aplikator, (list, tuple, set)):
+                active_apps = {str(a).strip().lower() for a in aplikator if str(a).strip()}
+            elif isinstance(aplikator, str):
+                active_apps = {a.strip().lower() for a in aplikator.split(",") if a.strip()}
+            else:
+                active_apps = {"all"}
+            is_all_apps = ("all" in active_apps) or (not active_apps)
+            app_display = "ALL" if is_all_apps else "+".join(sorted(active_apps)).upper()
+
+            log(78, f"Membaca data sumber ({source.upper()}) untuk aplikator: {app_display}...")
             if source == "vercel":
                 src_df = load_vercel_data()
             else:
                 dfs = []
-                if aplikator in ("all", "gofood"):
+                if is_all_apps or any(k in active_apps for k in ("gofood", "go")):
                     df_go = load_gofood_data()
                     if not df_go.empty:
                         dfs.append(df_go)
-                if aplikator in ("all", "grab"):
+                if is_all_apps or any(k in active_apps for k in ("grab", "grabfood")):
                     df_grab = load_grab_data()
                     if not df_grab.empty:
                         dfs.append(df_grab)
-                if aplikator in ("all", "shopee"):
+                if is_all_apps or any(k in active_apps for k in ("shopee", "shopeefood")):
                     df_shopee = load_shopee_data()
                     if not df_shopee.empty:
                         dfs.append(df_shopee)
@@ -866,16 +885,19 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                 return {"success": False, "error": f"Owner '{owner_name}' tidak ditemukan dalam data"}
 
             # Filter aplikator
-            if aplikator == "gofood":
-                owner_df = owner_df[owner_df["Aplikator"] == "GoFood"]
-            elif aplikator == "grab":
-                owner_df = owner_df[owner_df["Aplikator"] == "GrabFood"]
-            elif aplikator == "shopee":
-                owner_df = owner_df[owner_df["Aplikator"] == "ShopeeFood"]
+            if not is_all_apps:
+                target_names = []
+                if any(k in active_apps for k in ("gofood", "go")):
+                    target_names.append("GoFood")
+                if any(k in active_apps for k in ("grab", "grabfood")):
+                    target_names.append("GrabFood")
+                if any(k in active_apps for k in ("shopee", "shopeefood")):
+                    target_names.append("ShopeeFood")
+                owner_df = owner_df[owner_df["Aplikator"].isin(target_names)]
 
             if owner_df.empty:
-                log(100, f"⚠️ Tidak ada outlet {aplikator.upper()} untuk owner '{owner_name}'.")
-                return {"success": False, "error": f"Tidak ada outlet {aplikator} untuk owner {owner_name}"}
+                log(100, f"⚠️ Tidak ada outlet {app_display} untuk owner '{owner_name}'.")
+                return {"success": False, "error": f"Tidak ada outlet {app_display} untuk owner {owner_name}"}
 
             expected_df = owner_df.copy()
 

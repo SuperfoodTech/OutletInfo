@@ -85,9 +85,9 @@ def build_aplikator_options(available_platforms, current_selected="all"):
     """Menyusun opsi dropdown aplikator secara dinamis sesuai platform yang dimiliki owner."""
     options = []
     platform_map = {
-        "gofood": ("GoFood Saja", "🔴"),
-        "grab": ("GrabFood Saja", "🟢"),
-        "shopee": ("ShopeeFood Saja", "🟠")
+        "gofood": ("GoFood", "🔴"),
+        "grab": ("GrabFood", "🟢"),
+        "shopee": ("ShopeeFood", "🟠")
     }
 
     # Jika memiliki lebih dari 1 platform, tambahkan opsi "Semua Platform"
@@ -113,9 +113,25 @@ def build_aplikator_options(available_platforms, current_selected="all"):
             ))
 
     valid_values = [opt.value for opt in options]
-    chosen = current_selected if current_selected in valid_values else valid_values[0]
+    
+    # Normalisasi current_selected menjadi list
+    if isinstance(current_selected, str):
+        selected_list = [current_selected]
+    elif isinstance(current_selected, (list, tuple, set)):
+        selected_list = list(current_selected)
+    else:
+        selected_list = ["all"]
+
+    # Filter yang benar-benar ada di options
+    chosen = [v for v in selected_list if v in valid_values]
+    if not chosen:
+        chosen = ["all"] if "all" in valid_values else [valid_values[0]]
+    elif "all" in chosen and len(chosen) > 1:
+        # Jika 'all' tercampur dengan yang lain, prioritaskan 'all'
+        chosen = ["all"]
+
     for opt in options:
-        opt.default = (opt.value == chosen)
+        opt.default = (opt.value in chosen)
 
     return options, chosen
 
@@ -127,9 +143,9 @@ class AplikatorSelect(discord.ui.Select):
         options, chosen = build_aplikator_options(platforms, parent_view.selected_aplikator)
         parent_view.selected_aplikator = chosen
         super().__init__(
-            placeholder="📌 Langkah 2: Pilih Aplikator...",
+            placeholder="📌 Langkah 2: Pilih Aplikator (Bisa Multi-Select)...",
             min_values=1,
-            max_values=1,
+            max_values=max(1, len(options)),
             options=options,
             row=1
         )
@@ -140,11 +156,32 @@ class AplikatorSelect(discord.ui.Select):
         options, chosen = build_aplikator_options(platforms, self.parent_view.selected_aplikator)
         self.parent_view.selected_aplikator = chosen
         self.options = options
+        self.max_values = max(1, len(options))
 
     async def callback(self, interaction: discord.Interaction):
-        self.parent_view.selected_aplikator = self.values[0]
+        prev = self.parent_view.selected_aplikator
+        if isinstance(prev, str):
+            prev = [prev]
+
+        new_values = self.values
+        # Mutually exclusive logic:
+        # Jika 'all' ada di new_values:
+        # 1. Jika sebelumnya 'all' belum dipilih, berarti user baru saja memilih 'all' -> jadikan hanya ['all']
+        # 2. Jika sebelumnya 'all' sudah dipilih dan user memilih platform spesifik -> hapus 'all', pakai platform spesifik
+        if "all" in new_values:
+            if "all" not in prev:
+                chosen = ["all"]
+            else:
+                chosen = [v for v in new_values if v != "all"]
+                if not chosen:
+                    chosen = ["all"]
+        else:
+            chosen = new_values if new_values else ["all"]
+
+        self.parent_view.selected_aplikator = chosen
         for opt in self.options:
-            opt.default = (opt.value == self.values[0])
+            opt.default = (opt.value in chosen)
+
         await self.parent_view.update_panel(interaction)
 
 
@@ -284,6 +321,31 @@ class RefreshButton(discord.ui.Button):
         await interaction.response.defer()
         self.parent_view.reload_metadata(force_live=True)
         await self.parent_view.update_panel(interaction, edit_response=True)
+
+
+class CancelButton(discord.ui.Button):
+    def __init__(self, parent_view):
+        self.parent_view = parent_view
+        super().__init__(
+            label="Batal",
+            style=discord.ButtonStyle.danger,
+            emoji="✖",
+            row=2
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.parent_view.user.id:
+            await interaction.response.send_message("❌ Anda tidak memiliki izin untuk membatalkan panel ini.", ephemeral=True)
+            return
+
+        cancel_embed = discord.Embed(
+            title="🛑 PANEL DIBATALKAN",
+            description=f"Panel kontrol telah dibatalkan dan ditutup oleh {interaction.user.mention}.",
+            color=THEME_ERROR,
+            timestamp=datetime.datetime.now()
+        )
+        self.parent_view.stop()
+        await interaction.response.edit_message(embed=cancel_embed, view=None)
 
 
 class PartialResultView(discord.ui.View):
@@ -498,6 +560,7 @@ class ControlPanelView(discord.ui.View):
         self.aplikator_select = AplikatorSelect(self)
         self.generate_btn = GenerateButton(self)
         self.refresh_btn = RefreshButton(self)
+        self.cancel_btn = CancelButton(self)
 
         # Row 0: Owner Select
         self.add_item(self.owner_select)
@@ -506,6 +569,7 @@ class ControlPanelView(discord.ui.View):
         # Row 2: Tombol Aksi
         self.add_item(self.generate_btn)
         self.add_item(self.refresh_btn)
+        self.add_item(self.cancel_btn)
 
         # Row 3: Tombol Navigasi Halaman jika total_pages > 1
         if self.total_pages > 1:
@@ -556,13 +620,22 @@ class ControlPanelView(discord.ui.View):
             elif p == "grab": names.append("Grab")
             elif p == "shopee": names.append("Shopee")
 
-        app_names = {
-            "all": f"🌐 Semua Platform ({' + '.join(names)})" if len(names) > 1 else f"🌐 Semua Platform ({names[0]})" if names else "🌐 Semua Platform",
-            "gofood": "🔴 GoFood Saja",
-            "grab": "🟢 GrabFood Saja",
-            "shopee": "🟠 ShopeeFood Saja"
+        # Format label aplikator terpilih (bisa single atau kombinasi multi-select)
+        selected = self.selected_aplikator
+        if isinstance(selected, str):
+            selected = [selected]
+
+        platform_icons = {
+            "gofood": "🔴 GoFood",
+            "grab": "🟢 GrabFood",
+            "shopee": "🟠 ShopeeFood"
         }
-        aplikator_label = app_names.get(self.selected_aplikator, self.selected_aplikator)
+
+        if "all" in selected or not selected:
+            aplikator_label = f"🌐 Semua Platform ({' + '.join(names)})" if len(names) > 1 else (f"🌐 Semua Platform ({names[0]})" if names else "🌐 Semua Platform")
+        else:
+            selected_labels = [platform_icons.get(p, p.title()) for p in selected if p in platform_icons]
+            aplikator_label = " + ".join(selected_labels) if selected_labels else "🌐 Semua Platform"
 
         # Info owner terpilih dan brand
         owner_brand = ""
