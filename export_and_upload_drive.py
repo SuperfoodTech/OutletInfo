@@ -349,6 +349,40 @@ def write_data_to_sheet(ws, df, headers):
                 cell.number_format = '@'
 
 
+def sort_df_by_aplikator(df):
+    """
+    Mengurutkan DataFrame berdasarkan urutan standar aplikator:
+    1. GoFood
+    2. GrabFood
+    3. ShopeeFood
+    Menggunakan stable sort agar urutan outlet di dalam aplikator yang sama tetap terjaga.
+    """
+    if df is None or df.empty or "Aplikator" not in df.columns:
+        return df
+    app_rank = {
+        "gofood": 1,
+        "grabfood": 2,
+        "grab": 2,
+        "shopeefood": 3,
+        "shopee": 3
+    }
+    df_copy = df.copy()
+    df_copy["_app_sort_order"] = (
+        df_copy["Aplikator"]
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .map(app_rank)
+        .fillna(99)
+    )
+    df_sorted = (
+        df_copy.sort_values(by=["_app_sort_order"], kind="stable")
+        .drop(columns=["_app_sort_order"])
+        .reset_index(drop=True)
+    )
+    return df_sorted
+
+
 def save_owner_workbook(owner_df, file_path, headers):
     """
     Menyimpan data per-owner ke file Excel dengan 2 tab 100% identik:
@@ -358,7 +392,9 @@ def save_owner_workbook(owner_df, file_path, headers):
     sehingga pewarnaan kolom header (Merah, Pink, Hijau, Oranye), font Arial,
     dan lebar kolom asli terjaga 100% identik.
     Menggunakan penulisan atomic via folder .tmp agar terhindar dari file korup jika terjadi crash.
+    Data selalu diurutkan dengan urutan standar: GoFood -> GrabFood -> ShopeeFood.
     """
+    owner_df = sort_df_by_aplikator(owner_df)
     target_path = Path(file_path)
     tmp_dir = target_path.parent / ".tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -982,7 +1018,10 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                     scraped_owner = scraped_all[scraped_all["Nama Pemilik"].astype(str).str.strip().str.lower() == owner_name.strip().lower()]
 
                 final_rows = []
-                for app in owner_df["Aplikator"].dropna().unique():
+                app_order_std = ["GoFood", "GrabFood", "ShopeeFood"]
+                unique_apps = list(owner_df["Aplikator"].dropna().unique())
+                sorted_apps = [a for a in app_order_std if a in unique_apps] + [a for a in unique_apps if a not in app_order_std]
+                for app in sorted_apps:
                     app_vercel_rows = owner_df[owner_df["Aplikator"] == app]
                     app_scraped_rows = scraped_owner[scraped_owner["Aplikator"] == app] if not scraped_owner.empty and "Aplikator" in scraped_owner.columns else pd.DataFrame()
 
@@ -1053,6 +1092,10 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
 
                 if len(owner_df) < orig_len:
                     log(84, f"🧹 Berhasil membersihkan {orig_len - len(owner_df)} baris duplikat dari data akhir.")
+
+            # Pastikan urutan selalu standar: GoFood -> GrabFood -> ShopeeFood
+            owner_df = sort_df_by_aplikator(owner_df)
+            expected_df = sort_df_by_aplikator(expected_df)
 
             # Verifikasi kelengkapan ekstraksi terhadap Vercel Sheet
             missing_items = verify_extraction_completeness(expected_df, owner_df, scrape_status)
