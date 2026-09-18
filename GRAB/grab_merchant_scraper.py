@@ -938,8 +938,14 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
             await page.wait_for_timeout(3000)
             stores_retry, _ = await fetch_merchant_list(page)
             
-            # Gabungkan dengan data sebelumnya tanpa menghapus duplikat
-            stores.extend(stores_retry)
+            # Gabungkan dengan data sebelumnya tanpa duplikat
+            existing_ids = {str(s.get("merchantID") or s.get("merchantId") or s.get("id") or "").strip() for s in stores}
+            for sr in stores_retry:
+                srid = str(sr.get("merchantID") or sr.get("merchantId") or sr.get("id") or "").strip()
+                if not srid or srid not in existing_ids:
+                    stores.append(sr)
+                    if srid:
+                        existing_ids.add(srid)
             retry_count += 1
             
         logger.info(f"Total unique stores extracted finally: {len(stores)} (Target expected from API: {total_expected})")
@@ -993,10 +999,14 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
         with open(headers_file, "w") as hf:
             json.dump(auth_headers, hf)
         
+        seen_merchant_ids = set()
         for store in stores:
             merchant_id = (
                 str(store.get("merchantID") or store.get("merchantId") or store.get("id") or "")
             ).strip()
+            if not merchant_id or merchant_id in seen_merchant_ids:
+                continue
+            seen_merchant_ids.add(merchant_id)
             store_name = store.get("name") or store.get("merchantName") or store.get("storeName") or merchant_id
             status = store.get("status") or store.get("isActive") or ""
             alamat = store.get("address") or store.get("merchantAddress") or ""
@@ -1026,9 +1036,6 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
             if not no_rekening:
                 no_rekening = group_acc_no
 
-            if not merchant_id:
-                continue
-
             link_menu = f"https://merchant.grab.com/food/menu/{merchant_id}" if merchant_id else ""
 
             all_results.append({
@@ -1053,7 +1060,7 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
 
     except Exception as e:
         logger.error(f"Unexpected error for {cred['name']}: {e}")
-        return []
+        return None
     finally:
         await context.close()
         await browser.close()
@@ -1376,6 +1383,19 @@ async def main():
         logger.error("Tidak ada portal yang dipilih.")
         return
 
+    # Deduplikasi akun Grab berdasarkan username agar tidak terjadi double-scrape
+    seen_users = set()
+    unique_credentials = []
+    for cred in target_credentials:
+        u = str(cred.get("username") or "").strip().lower()
+        if u and u != "-" and u in seen_users:
+            logger.info(f"⏩ [DEDUPLIKASI] Melewati portal '{cred['name']}' karena akun Grab ('{u}') sudah terdaftar dalam antrean.")
+            continue
+        if u and u != "-":
+            seen_users.add(u)
+        unique_credentials.append(cred)
+    target_credentials = unique_credentials
+
     output_dir = OUTPUT_DIR
     progress_file = os.path.join(SESSIONS_DIR, f".grab_progress_{source_type}.json")
     if source_type == "agency" and not os.path.exists(progress_file) and os.path.exists(os.path.join(SESSIONS_DIR, ".grab_progress.json")):
@@ -1383,6 +1403,7 @@ async def main():
 
     # ── Checkpoint / Resume Management ──────────────────────────────
     completed_portal_names = set()
+    completed_usernames = set()
     all_collected_stores = []
     
     if args.fresh and os.path.exists(progress_file):
@@ -1397,9 +1418,10 @@ async def main():
             with open(progress_file, "r", encoding="utf-8") as f:
                 checkpoint_data = json.load(f)
                 completed_portal_names = set(checkpoint_data.get("completed_portals", []))
+                completed_usernames = set(checkpoint_data.get("completed_usernames", []))
                 raw_stores = checkpoint_data.get("stores", [])
                 all_collected_stores = [s for s in raw_stores if isinstance(s, dict)]
-                logger.info(f"🔄 [RESUME AKTIF] Memuat progress checkpoint: {len(completed_portal_names)} portal sudah selesai ditarik sebelumnya.")
+                logger.info(f"🔄 [RESUME AKTIF] Memuat progress checkpoint: {len(completed_portal_names)} portal / {len(completed_usernames)} akun sudah selesai ditarik sebelumnya.")
         except Exception as ex:
             logger.warning(f"Gagal membaca checkpoint progress: {ex}")
 
@@ -1408,15 +1430,16 @@ async def main():
 
     async with async_playwright() as playwright:
         for idx, cred in enumerate(target_credentials, 1):
-            if cred["name"] in completed_portal_names:
-                logger.info(f"⏩ [{idx}/{len(target_credentials)}] Portal '{cred['name']}' sudah selesai sebelumnya (Dilewati).")
+            cred_user = str(cred.get("username") or "").strip().lower()
+            if cred["name"] in completed_portal_names or (cred_user and cred_user != "-" and cred_user in completed_usernames):
+                logger.info(f"⏩ [{idx}/{len(target_credentials)}] Portal '{cred['name']}' / Akun '{cred_user}' sudah selesai sebelumnya (Dilewati).")
                 continue
 
             logger.info(f"\n▶️ [{idx}/{len(target_credentials)}] Memproses portal: {cred['name']} (Owner: {cred.get('owner', '-')})...")
             stores_res = await run_scraper_for_credential(playwright, cred, force_fresh=args.fresh, headless=args.headless)
             
             retry_count = 0
-            while not stores_res and retry_count < 2:
+            while stores_res is None and retry_count < 2:
                 retry_count += 1
                 logger.warning(f"[!] Portal {cred['name']} gagal diproses/login. Melakukan retry ke-{retry_count} dari 2...")
                 await asyncio.sleep(5)
@@ -1427,6 +1450,8 @@ async def main():
                 if valid_stores:
                     all_collected_stores.extend(valid_stores)
                     completed_portal_names.add(cred["name"])
+                    if cred_user and cred_user != "-":
+                        completed_usernames.add(cred_user)
                     
                     # Simpan ke Cache JSON & Output Excel per-owner secara Real-Time
                     save_portal_results(valid_stores, cred, source_type)
@@ -1436,6 +1461,7 @@ async def main():
                         with open(progress_file, "w", encoding="utf-8") as f:
                             json.dump({
                                 "completed_portals": list(completed_portal_names),
+                                "completed_usernames": list(completed_usernames),
                                 "stores": all_collected_stores,
                                 "last_update": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             }, f, indent=2)

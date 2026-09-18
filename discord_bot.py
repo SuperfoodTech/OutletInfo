@@ -286,6 +286,201 @@ class RefreshButton(discord.ui.Button):
         await self.parent_view.update_panel(interaction, edit_response=True)
 
 
+class PartialResultView(discord.ui.View):
+    """View interaktif saat generasi selesai sebagian dengan opsi retry terfokus."""
+    def __init__(self, owner, aplikator, missing_items, folder_url, doc_url, owners_meta, retry_count=0):
+        super().__init__(timeout=600)
+        self.owner = owner
+        self.aplikator = aplikator
+        self.missing_items = missing_items
+        self.folder_url = folder_url
+        self.doc_url = doc_url
+        self.owners_meta = owners_meta
+        self.retry_count = retry_count
+
+        self.add_item(discord.ui.Button(label="Buka Folder Drive", url=folder_url, style=discord.ButtonStyle.link, emoji="📁"))
+        if doc_url:
+            self.add_item(discord.ui.Button(label="Buka File Excel (Parsial)", url=doc_url, style=discord.ButtonStyle.link, emoji="📄"))
+        self.add_item(discord.ui.Button(label="Folder Induk Drive", url=ROOT_DRIVE_URL, style=discord.ButtonStyle.link, emoji="🌐"))
+
+        # Tombol Retry khusus gagal jika belum melebihi 2 kali retry
+        if self.retry_count < 2:
+            retry_btn = discord.ui.Button(
+                label=f"Coba Tarik Ulang ({len(missing_items)} Gagal)",
+                style=discord.ButtonStyle.danger,
+                emoji="🔄",
+                custom_id=f"retry_partial_{self.retry_count}"
+            )
+            retry_btn.callback = self.handle_retry
+            self.add_item(retry_btn)
+
+    async def handle_retry(self, interaction: discord.Interaction):
+        # 1. Cek proteksi JobLock
+        if is_pipeline_locked():
+            lock_info = get_lock_info()
+            busy_owner = lock_info.get("owner", "Owner lain")
+            busy_user = lock_info.get("user", "Pengguna lain")
+            await interaction.response.send_message(
+                f"⏳ Pipeline sedang sibuk memproses **{busy_owner}** (oleh **{busy_user}**). Silakan tunggu sebentar sebelum mencoba lagi.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+
+        # Disable tombol retry agar tidak diklik dua kali
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.style == discord.ButtonStyle.danger:
+                item.disabled = True
+        try:
+            await interaction.edit_original_response(view=self)
+        except Exception:
+            pass
+
+        # Siapkan embed live progress retry
+        terminal_lines = [f"Sedang mengulang penarikan untuk {len(self.missing_items)} outlet yang gagal..."]
+        progress_embed = discord.Embed(
+            title="🔄 MENARIK ULANG OUTLET GAGAL",
+            description=(
+                f"Memproses ulang untuk **{self.owner}** (Percobaan {self.retry_count + 1}/2)\n"
+                f"Target khusus: **{len(self.missing_items)} Outlet**"
+            ),
+            color=THEME_PROGRESS,
+            timestamp=datetime.datetime.now()
+        )
+        progress_embed.add_field(name="💻 Terminal Logs", value="```ansi\n" + "\n".join(terminal_lines) + "\n```", inline=False)
+        await interaction.edit_original_response(embed=progress_embed, view=None)
+
+        loop = asyncio.get_running_loop()
+        edit_lock = asyncio.Lock()
+        is_finished = False
+
+        async def discord_progress_callback(pct, msg):
+            if is_finished:
+                return
+            terminal_lines.append(f"[{pct:>3}%] {msg}")
+            if len(terminal_lines) > 6:
+                terminal_lines.pop(0)
+            log_text = "\n".join(terminal_lines)
+            progress_embed.set_field_at(0, name="💻 Terminal Logs", value=f"```ansi\n{log_text}\n```", inline=False)
+            async with edit_lock:
+                try:
+                    await interaction.edit_original_response(embed=progress_embed, view=None)
+                except Exception:
+                    pass
+
+        def run_retry_task():
+            def cb(pct, msg):
+                asyncio.run_coroutine_threadsafe(discord_progress_callback(pct, msg), loop)
+            return generate_for_owner_pipeline(
+                owner_name=self.owner,
+                aplikator=self.aplikator,
+                upload=True,
+                source="vercel",
+                live_scrape=True,
+                progress_callback=cb,
+                lock_timeout=0,
+                requested_by=f"{interaction.user.display_name} (Retry)",
+                retry_targets=self.missing_items
+            )
+
+        try:
+            res = await loop.run_in_executor(None, run_retry_task)
+        except Exception as e:
+            res = {"success": False, "error": str(e)}
+
+        is_finished = True
+        await asyncio.sleep(0.8)
+
+        if res.get("success"):
+            new_is_partial = res.get("is_partial", False) or res.get("status") == "PARTIAL"
+            new_folder_url = res.get("folder_url", self.folder_url)
+            new_file_url = res.get("file_url", self.doc_url)
+
+            if not new_is_partial:
+                # Berhasil 100% lengkap setelah retry
+                full_embed = discord.Embed(
+                    title="🎉 GENERASI & UPLOAD LENGKAP!",
+                    description=(
+                        f"Seluruh data merchant untuk **{res['owner']}** berhasil ditarik dan diperbarui "
+                        f"ke dalam **2 Tab Identik** di Google Drive."
+                    ),
+                    color=THEME_SUCCESS,
+                    timestamp=datetime.datetime.now()
+                )
+                owner_brand = ""
+                for m in self.owners_meta:
+                    if m["owner"].strip().lower() == str(res.get("owner", "")).strip().lower():
+                        owner_brand = m.get("brand", "")
+                        break
+                owner_val = f"**{res['owner']}**"
+                if owner_brand:
+                    owner_val += f"\n🏷️ `{owner_brand}`"
+
+                full_embed.add_field(name="👤 Nama Pemilik", value=owner_val, inline=True)
+                full_embed.add_field(name="📊 Total Outlet", value=f"**{res['total']} Outlet (100% Lengkap)**", inline=True)
+                full_embed.add_field(name="📄 File Excel", value=f"`{res['filename']}`\n`✓ Diperbarui di Google Drive`", inline=False)
+                full_embed.add_field(name="📁 Link Folder Google Drive", value=f"[👉 Buka Folder `{res['owner']}` di Google Drive]({new_folder_url})", inline=False)
+                full_embed.set_footer(text="Superfood Tech • Multi-Platform Engine", icon_url=DRIVE_ICON_URL)
+
+                class FullResultView(discord.ui.View):
+                    def __init__(self, f_url, doc_url):
+                        super().__init__(timeout=None)
+                        self.add_item(discord.ui.Button(label="Buka Folder Google Drive", url=f_url, style=discord.ButtonStyle.link, emoji="📁"))
+                        if doc_url:
+                            self.add_item(discord.ui.Button(label="Buka File Excel", url=doc_url, style=discord.ButtonStyle.link, emoji="📄"))
+                        self.add_item(discord.ui.Button(label="Folder Induk Drive", url=ROOT_DRIVE_URL, style=discord.ButtonStyle.link, emoji="🌐"))
+
+                async with edit_lock:
+                    await interaction.edit_original_response(embed=full_embed, view=FullResultView(new_folder_url, new_file_url))
+            else:
+                # Masih ada yang gagal
+                new_missing = res.get("missing_items", [])
+                new_completed = res.get("completed_count", res.get("total", 0))
+                new_expected = res.get("expected_count", new_completed + len(new_missing))
+
+                still_partial_embed = discord.Embed(
+                    title="⚠️ GENERASI SELESAI SEBAGIAN (RETRY)",
+                    description=(
+                        f"Hasil retry untuk **{res['owner']}** (Percobaan {self.retry_count + 1}/2): "
+                        f"**{new_completed}/{new_expected} Outlet** berhasil ditarik."
+                    ),
+                    color=0xE67E22,
+                    timestamp=datetime.datetime.now()
+                )
+                missing_lines = []
+                for item in new_missing[:8]:
+                    app_icon = "🔴" if "go" in item["aplikator"].lower() else ("🟢" if "grab" in item["aplikator"].lower() else "🟠")
+                    missing_lines.append(f"{app_icon} **{item['aplikator']}**: `{item['outlet']}` ({item.get('reason', 'Gagal')})")
+                if len(new_missing) > 8:
+                    missing_lines.append(f"... dan {len(new_missing) - 8} outlet lainnya.")
+
+                still_partial_embed.add_field(name="⚠️ Outlet yang Belum Lengkap", value="\n".join(missing_lines) if missing_lines else "-", inline=False)
+                still_partial_embed.add_field(name="📁 Link Folder Google Drive", value=f"[👉 Buka Folder `{res['owner']}` di Google Drive]({new_folder_url})", inline=False)
+                still_partial_embed.set_footer(text="Superfood Tech • Batas maksimal retry adalah 2 kali", icon_url=DRIVE_ICON_URL)
+
+                new_view = PartialResultView(
+                    owner=self.owner,
+                    aplikator=self.aplikator,
+                    missing_items=new_missing,
+                    folder_url=new_folder_url,
+                    doc_url=new_file_url,
+                    owners_meta=self.owners_meta,
+                    retry_count=self.retry_count + 1
+                )
+                async with edit_lock:
+                    await interaction.edit_original_response(embed=still_partial_embed, view=new_view)
+        else:
+            err_embed = discord.Embed(
+                title="❌ RETRY GAGAL",
+                description=f"Terjadi kesalahan saat retry untuk **{self.owner}**:\n```\n{res.get('error', 'Unknown Error')}\n```",
+                color=THEME_ERROR,
+                timestamp=datetime.datetime.now()
+            )
+            async with edit_lock:
+                await interaction.edit_original_response(embed=err_embed, view=self)
+
+
 class ControlPanelView(discord.ui.View):
     def __init__(self, user, initial_owner=None):
         super().__init__(timeout=600)
@@ -547,55 +742,130 @@ class ControlPanelView(discord.ui.View):
 
         # Selesai: Tampilkan Embed Sukses / Gagal
         if result.get("success"):
+            is_partial = result.get("is_partial", False) or result.get("status") == "PARTIAL"
             folder_url = result.get("folder_url", ROOT_DRIVE_URL)
             file_url = result.get("file_url", "")
-            
-            success_embed = discord.Embed(
-                title="🎉 GENERASI & UPLOAD BERHASIL!",
-                description=(
-                    f"Data merchant untuk **{result['owner']}** berhasil digabungkan ke dalam **2 Tab Identik** "
-                    f"dan telah diunggah ke folder Google Drive."
-                ),
-                color=THEME_SUCCESS,
-                timestamp=datetime.datetime.now()
-            )
-            owner_brand = ""
-            for m in self.owners_meta:
-                if m["owner"].strip().lower() == str(result.get("owner", "")).strip().lower():
-                    owner_brand = m.get("brand", "")
-                    break
-            owner_val = f"**{result['owner']}**"
-            if owner_brand:
-                owner_val += f"\n🏷️ `{owner_brand}`"
 
-            success_embed.add_field(name="👤 Nama Pemilik", value=owner_val, inline=True)
-            success_embed.add_field(name="📊 Total Outlet", value=f"**{result['total']} Outlet**", inline=True)
-            success_embed.add_field(name="📄 File Excel", value=f"`{result['filename']}`\n`✓ 2 Tab (Listing & Listing 2)`", inline=False)
-            success_embed.add_field(name="📁 Link Folder Google Drive", value=f"[👉 Buka Folder `{result['owner']}` di Google Drive]({folder_url})", inline=False)
-            
-            success_embed.set_footer(text="Superfood Tech • Multi-Platform Engine", icon_url=DRIVE_ICON_URL)
-
-            # Buat Link Buttons
-            class ResultView(discord.ui.View):
-                def __init__(self, f_url, doc_url):
-                    super().__init__(timeout=None)
-                    self.add_item(discord.ui.Button(label="Buka Folder Google Drive", url=f_url, style=discord.ButtonStyle.link, emoji="📁"))
-                    if doc_url:
-                        self.add_item(discord.ui.Button(label="Buka File Excel", url=doc_url, style=discord.ButtonStyle.link, emoji="📄"))
-                    self.add_item(discord.ui.Button(label="Folder Induk Drive", url=ROOT_DRIVE_URL, style=discord.ButtonStyle.link, emoji="🌐"))
-
-            res_view = ResultView(folder_url, file_url)
-            
-            # Update embed dengan penguncian & percobaan ulang jika terkena rate limit
-            async with edit_lock:
-                for attempt in range(3):
-                    try:
-                        await interaction.edit_original_response(embed=success_embed, view=res_view)
-                        print(f"✅ Success embed berhasil diperbarui untuk '{result['owner']}'.")
+            if not is_partial:
+                success_embed = discord.Embed(
+                    title="🎉 GENERASI & UPLOAD BERHASIL!",
+                    description=(
+                        f"Data merchant untuk **{result['owner']}** berhasil digabungkan ke dalam **2 Tab Identik** "
+                        f"dan telah diunggah ke folder Google Drive."
+                    ),
+                    color=THEME_SUCCESS,
+                    timestamp=datetime.datetime.now()
+                )
+                owner_brand = ""
+                for m in self.owners_meta:
+                    if m["owner"].strip().lower() == str(result.get("owner", "")).strip().lower():
+                        owner_brand = m.get("brand", "")
                         break
-                    except Exception as e:
-                        print(f"⚠️ Gagal update success embed (percobaan {attempt+1}): {e}")
-                        await asyncio.sleep(1.5)
+                owner_val = f"**{result['owner']}**"
+                if owner_brand:
+                    owner_val += f"\n🏷️ `{owner_brand}`"
+
+                success_embed.add_field(name="👤 Nama Pemilik", value=owner_val, inline=True)
+                success_embed.add_field(name="📊 Total Outlet", value=f"**{result['total']} Outlet**", inline=True)
+                success_embed.add_field(name="📄 File Excel", value=f"`{result['filename']}`\n`✓ 2 Tab (Listing & Listing 2)`", inline=False)
+                success_embed.add_field(name="📁 Link Folder Google Drive", value=f"[👉 Buka Folder `{result['owner']}` di Google Drive]({folder_url})", inline=False)
+                
+                success_embed.set_footer(text="Superfood Tech • Multi-Platform Engine", icon_url=DRIVE_ICON_URL)
+
+                # Buat Link Buttons
+                class ResultView(discord.ui.View):
+                    def __init__(self, f_url, doc_url):
+                        super().__init__(timeout=None)
+                        self.add_item(discord.ui.Button(label="Buka Folder Google Drive", url=f_url, style=discord.ButtonStyle.link, emoji="📁"))
+                        if doc_url:
+                            self.add_item(discord.ui.Button(label="Buka File Excel", url=doc_url, style=discord.ButtonStyle.link, emoji="📄"))
+                        self.add_item(discord.ui.Button(label="Folder Induk Drive", url=ROOT_DRIVE_URL, style=discord.ButtonStyle.link, emoji="🌐"))
+
+                res_view = ResultView(folder_url, file_url)
+                
+                # Update embed dengan penguncian & percobaan ulang jika terkena rate limit
+                async with edit_lock:
+                    for attempt in range(3):
+                        try:
+                            await interaction.edit_original_response(embed=success_embed, view=res_view)
+                            print(f"✅ Success embed berhasil diperbarui untuk '{result['owner']}'.")
+                            break
+                        except Exception as e:
+                            print(f"⚠️ Gagal update success embed (percobaan {attempt+1}): {e}")
+                            await asyncio.sleep(1.5)
+            else:
+                missing_items = result.get("missing_items", [])
+                completed_count = result.get("completed_count", result.get("total", 0))
+                expected_count = result.get("expected_count", completed_count + len(missing_items))
+
+                partial_embed = discord.Embed(
+                    title="⚠️ GENERASI SELESAI SEBAGIAN",
+                    description=(
+                        f"Data merchant untuk **{result['owner']}** berhasil diproses sebagian "
+                        f"(**{completed_count}/{expected_count} Outlet**).\n"
+                        f"Terdapat beberapa outlet yang belum lengkap atau gagal ditarik secara live."
+                    ),
+                    color=0xE67E22,
+                    timestamp=datetime.datetime.now()
+                )
+                owner_brand = ""
+                for m in self.owners_meta:
+                    if m["owner"].strip().lower() == str(result.get("owner", "")).strip().lower():
+                        owner_brand = m.get("brand", "")
+                        break
+                owner_val = f"**{result['owner']}**"
+                if owner_brand:
+                    owner_val += f"\n🏷️ `{owner_brand}`"
+
+                partial_embed.add_field(name="👤 Nama Pemilik", value=owner_val, inline=True)
+                partial_embed.add_field(
+                    name="📊 Status Outlet",
+                    value=f"✅ Berhasil: **{completed_count}**\n❌ Gagal: **{len(missing_items)}**",
+                    inline=True
+                )
+
+                missing_lines = []
+                for item in missing_items[:8]:
+                    app_icon = "🔴" if "go" in item["aplikator"].lower() else ("🟢" if "grab" in item["aplikator"].lower() else "🟠")
+                    missing_lines.append(f"{app_icon} **{item['aplikator']}**: `{item['outlet']}` ({item.get('reason', 'Gagal')})")
+                if len(missing_items) > 8:
+                    missing_lines.append(f"... dan {len(missing_items) - 8} outlet lainnya.")
+
+                partial_embed.add_field(
+                    name="⚠️ Rincian Outlet yang Belum Lengkap",
+                    value="\n".join(missing_lines) if missing_lines else "Data toko parsial",
+                    inline=False
+                )
+                partial_embed.add_field(
+                    name="📄 File Excel (Parsial)",
+                    value=f"`{result['filename']}`\n`✓ 2 Tab (Listing & Listing 2)`",
+                    inline=False
+                )
+                partial_embed.add_field(
+                    name="📁 Link Folder Google Drive",
+                    value=f"[👉 Buka Folder `{result['owner']}` di Google Drive]({folder_url})",
+                    inline=False
+                )
+                partial_embed.set_footer(text="Superfood Tech • Klik 'Coba Tarik Ulang' untuk memproses yang gagal", icon_url=DRIVE_ICON_URL)
+
+                part_view = PartialResultView(
+                    owner=result["owner"],
+                    aplikator=self.selected_aplikator,
+                    missing_items=missing_items,
+                    folder_url=folder_url,
+                    doc_url=file_url,
+                    owners_meta=self.owners_meta,
+                    retry_count=0
+                )
+                async with edit_lock:
+                    for attempt in range(3):
+                        try:
+                            await interaction.edit_original_response(embed=partial_embed, view=part_view)
+                            print(f"⚠️ Partial embed berhasil diperbarui untuk '{result['owner']}'.")
+                            break
+                        except Exception as e:
+                            print(f"⚠️ Gagal update partial embed (percobaan {attempt+1}): {e}")
+                            await asyncio.sleep(1.5)
 
         elif result.get("error") == "LOCKED":
             lock_info = result.get("lock_info", {})
