@@ -588,21 +588,42 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150):
         return -1
 
 
-def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
+def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, retry_targets=None):
     """
-    Menjalankan live scraping GoFood, Grab, dan Shopee untuk owner spesifik.
-    Menggunakan subprocess terisolasi dengan streaming log dan timeout aman.
+    Menjalankan live scraping untuk GoFood, GrabFood, dan ShopeeFood secara berurutan.
+    progress_cb: function(percent: int, log_line: str)
+    retry_targets: list of dicts (jika hanya menargetkan outlet/aplikator tertentu yang gagal)
+    Mengembalikan dict status hasil scraping per-aplikator.
     """
     clean_owner = owner_name.strip()
     python_bin = sys.executable
+    scrape_status = {
+        "gofood": None,
+        "grab": None,
+        "shopee": None,
+        "shopee_merchants": {}
+    }
 
     def send_log(pct, msg):
         if progress_cb:
             progress_cb(pct, msg)
         print(f"[{pct:>3}%] {msg}")
 
+    # Cek apakah aplikator masuk dalam target eksekusi
+    def should_run_app(app_key):
+        if retry_targets is None:
+            return aplikator in ("all", app_key)
+        target_apps = [str(t.get("aplikator", "")).lower() for t in retry_targets]
+        if app_key == "gofood" and any("go" in a for a in target_apps):
+            return True
+        if app_key == "grab" and any("grab" in a for a in target_apps):
+            return True
+        if app_key == "shopee" and any("shopee" in a for a in target_apps):
+            return True
+        return False
+
     # 1. LIVE SCRAPING GOFOOD
-    if aplikator in ("all", "gofood"):
+    if should_run_app("gofood"):
         send_log(15, f"🚀 [GoFood] Memulai penarikan live untuk '{clean_owner}'...")
         headless_go = os.getenv("HEADLESS_GOFOOD", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
         cmd = [
@@ -622,13 +643,14 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
             on_log=lambda m: send_log(25, f"[GoFood] {m}"),
             timeout_sec=160
         )
+        scrape_status["gofood"] = rc
         if rc == 0:
             send_log(35, f"✅ [GoFood] Selesai memproses '{clean_owner}'.")
         else:
             send_log(35, f"⚠️ [GoFood] Selesai dengan kode status {rc}.")
 
     # 2. LIVE SCRAPING GRABFOOD
-    if aplikator in ("all", "grab"):
+    if should_run_app("grab"):
         send_log(40, f"🚀 [GrabFood] Memulai penarikan live untuk '{clean_owner}'...")
         headless_grab = os.getenv("HEADLESS_GRAB", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
         cmd = [
@@ -647,13 +669,14 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
             on_log=lambda m: send_log(55, f"[Grab] {m}"),
             timeout_sec=180
         )
+        scrape_status["grab"] = rc
         if rc == 0:
             send_log(65, f"✅ [GrabFood] Selesai memproses '{clean_owner}'.")
         else:
             send_log(65, f"⚠️ [GrabFood] Selesai dengan kode status {rc}.")
 
     # 3. LIVE SCRAPING SHOPEEFOOD
-    if aplikator in ("all", "shopee"):
+    if should_run_app("shopee"):
         send_log(68, f"🚀 [ShopeeFood] Memeriksa akun Shopee untuk '{clean_owner}'...")
         try:
             v_df = load_vercel_data()
@@ -664,6 +687,11 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
                     for col in ["Merchant Name", "Nama Portal", "Nama Brand", "Nama Akses"]:
                         val = str(r.get(col) or "").strip()
                         if val and val.lower() not in ("nan", "none", "-") and val not in merchant_names:
+                            # Filter spesifik jika retry_targets ditentukan
+                            if retry_targets is not None:
+                                shopee_targets = [str(t.get("portal") or t.get("outlet") or "").strip().lower() for t in retry_targets if "shopee" in str(t.get("aplikator", "")).lower()]
+                                if not any(st in val.lower() or val.lower() in st for st in shopee_targets if st):
+                                    continue
                             merchant_names.append(val)
                             break
             
@@ -678,21 +706,103 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None):
                         "--merchant-name", merchant_name,
                         "--headless" if headless_shopee else "--gui"
                     ]
-                    run_subprocess_stream(
+                    rc_sh = run_subprocess_stream(
                         cmd,
                         cwd=SHOPEE_DIR,
                         keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai"),
                         on_log=lambda m: send_log(74, f"[Shopee] {m}"),
                         timeout_sec=180
                     )
+                    scrape_status["shopee_merchants"][merchant_name] = rc_sh
+                scrape_status["shopee"] = 0 if all(c == 0 for c in scrape_status["shopee_merchants"].values()) else 1
                 send_log(76, f"✅ [ShopeeFood] Selesai memproses {len(merchant_names)} merchant.")
             else:
                 send_log(76, f"ℹ️ [ShopeeFood] Tidak ditemukan nama merchant Shopee untuk '{clean_owner}'.")
         except Exception as e:
+            scrape_status["shopee"] = 1
             send_log(76, f"⚠️ [ShopeeFood] Exception scraper: {e}")
 
+    return scrape_status
 
-def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source="vercel", live_scrape=True, progress_callback=None, lock_timeout=0, requested_by="System"):
+
+def verify_extraction_completeness(expected_df, owner_df, scrape_status=None):
+    """
+    Membandingkan daftar outlet yang diharapkan dari Vercel Sheet dengan hasil akhir di owner_df.
+    Mengidentifikasi outlet yang gagal ditarik atau memiliki data Store ID kosong.
+    """
+    if expected_df.empty:
+        return []
+
+    scrape_status = scrape_status or {}
+    missing_items = []
+
+    def norm(s):
+        import re
+        return re.sub(r'[^a-z0-9]', '', str(s or '').lower())
+
+    for _, exp_row in expected_df.iterrows():
+        app = str(exp_row.get("Aplikator") or "").strip()
+        outlet_name = str(exp_row.get("Nama Outlet") or exp_row.get("Nama Brand") or "").strip()
+        portal_name = str(exp_row.get("Nama Portal") or exp_row.get("Nama Akses") or exp_row.get("Merchant Name") or "").strip()
+        user_name = str(exp_row.get("Nama Pengguna") or "").strip()
+
+        matched_rows = owner_df[owner_df["Aplikator"].astype(str).str.lower() == app.lower()] if "Aplikator" in owner_df.columns else pd.DataFrame()
+
+        found_valid = False
+        if not matched_rows.empty:
+            norm_exp_portal = norm(portal_name)
+            norm_exp_outlet = norm(outlet_name)
+            norm_exp_user = norm(user_name)
+
+            for _, act_row in matched_rows.iterrows():
+                store_id = str(act_row.get("Store ID") or "").strip()
+                has_store_id = bool(store_id and store_id.lower() not in ("nan", "none", "-", ""))
+
+                act_portal = norm(act_row.get("Nama Portal") or "")
+                act_outlet = norm(act_row.get("Nama Outlet") or act_row.get("Nama Brand") or act_row.get("Nama Listing") or "")
+                act_user = norm(act_row.get("Nama Pengguna") or "")
+
+                match_identity = False
+                if norm_exp_portal and norm_exp_portal in act_portal:
+                    match_identity = True
+                elif norm_exp_outlet and norm_exp_outlet in act_outlet:
+                    match_identity = True
+                elif norm_exp_user and norm_exp_user == act_user:
+                    match_identity = True
+                elif len(matched_rows) == 1 and len(expected_df[expected_df["Aplikator"].astype(str).str.lower() == app.lower()]) == 1:
+                    match_identity = True
+
+                if match_identity and has_store_id:
+                    found_valid = True
+                    break
+
+        if not found_valid:
+            reason = "Store ID kosong / data toko tidak lengkap"
+            app_lower = app.lower()
+            if "gofood" in app_lower and scrape_status.get("gofood") not in (None, 0):
+                reason = f"Proses GoFood scraper keluar status {scrape_status.get('gofood')}"
+            elif "grab" in app_lower and scrape_status.get("grab") not in (None, 0):
+                reason = f"Proses Grab scraper keluar status {scrape_status.get('grab')}"
+            elif "shopee" in app_lower:
+                sh_details = scrape_status.get("shopee_merchants", {})
+                for m_name, m_rc in sh_details.items():
+                    if norm(m_name) in norm(portal_name) or norm(portal_name) in norm(m_name):
+                        if m_rc != 0:
+                            reason = f"Gagal switch merchant Shopee '{m_name}'"
+                        break
+
+            missing_items.append({
+                "aplikator": app,
+                "outlet": outlet_name or portal_name or "Outlet Tanpa Nama",
+                "portal": portal_name or outlet_name or "-",
+                "username": user_name,
+                "reason": reason
+            })
+
+    return missing_items
+
+
+def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source="vercel", live_scrape=True, progress_callback=None, lock_timeout=0, requested_by="System", retry_targets=None):
     """
     Pipeline pembuatan file per-owner dan upload Drive dengan progress callback.
     Menggunakan Vercel Sheet sebagai sumber utama dan memperkaya data dengan hasil live scraping.
@@ -717,9 +827,10 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             OUTPUT_OWNERS_DIR.mkdir(parents=True, exist_ok=True)
 
             # 1. LIVE SCRAPING (Jika diaktifkan dan bukan mode __ALL__)
+            scrape_status = {}
             if live_scrape and owner_name != "__ALL__":
                 log(12, f"Menjalankan penarikan live data toko untuk '{owner_name}'...")
-                run_live_scraping_for_owner(owner_name, aplikator=aplikator, progress_cb=progress_callback)
+                scrape_status = run_live_scraping_for_owner(owner_name, aplikator=aplikator, progress_cb=progress_callback, retry_targets=retry_targets)
 
             log(78, f"Membaca data sumber ({source.upper()}) untuk aplikator: {aplikator.upper()}...")
             if source == "vercel":
@@ -765,6 +876,8 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             if owner_df.empty:
                 log(100, f"⚠️ Tidak ada outlet {aplikator.upper()} untuk owner '{owner_name}'.")
                 return {"success": False, "error": f"Tidak ada outlet {aplikator} untuk owner {owner_name}"}
+
+            expected_df = owner_df.copy()
 
             # Enrich data dari hasil scraping jika tersedia (Bank, Rekening, Store ID, Alamat)
             log(82, "Menggabungkan hasil penarikan data toko (Store ID, Alamat, Bank)...")
@@ -829,6 +942,39 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             except Exception as e:
                 print(f"⚠️ Info enrich scraped: {e}")
 
+            # Deduplikasi ketat data owner untuk mencegah baris ganda (misal duplikasi input di Vercel atau multiple scrape)
+            if not owner_df.empty:
+                orig_len = len(owner_df)
+                if "Store ID" in owner_df.columns:
+                    has_id = (
+                        owner_df["Store ID"].notna() 
+                        & (owner_df["Store ID"].astype(str).str.strip() != "") 
+                        & (owner_df["Store ID"].astype(str).str.strip() != "-")
+                    )
+                    df_with_id = owner_df[has_id].drop_duplicates(subset=["Aplikator", "Store ID"], keep="last")
+                    
+                    sub_no_id = [c for c in ["Aplikator", "Nama Outlet", "Nama Pengguna"] if c in owner_df.columns]
+                    if not sub_no_id:
+                        sub_no_id = ["Aplikator", "Nama Outlet"] if "Nama Outlet" in owner_df.columns else ["Aplikator"]
+                    df_no_id = owner_df[~has_id].drop_duplicates(subset=sub_no_id, keep="last")
+                    owner_df = pd.concat([df_with_id, df_no_id], ignore_index=True)
+                else:
+                    sub_cols = [c for c in ["Aplikator", "Nama Outlet", "Nama Pengguna"] if c in owner_df.columns]
+                    owner_df = owner_df.drop_duplicates(subset=sub_cols, keep="last")
+
+                if len(owner_df) < orig_len:
+                    log(84, f"🧹 Berhasil membersihkan {orig_len - len(owner_df)} baris duplikat dari data akhir.")
+
+            # Verifikasi kelengkapan ekstraksi terhadap Vercel Sheet
+            missing_items = verify_extraction_completeness(expected_df, owner_df, scrape_status)
+            is_partial = len(missing_items) > 0
+            completed_count = max(0, len(expected_df) - len(missing_items))
+
+            if is_partial:
+                log(86, f"⚠️ Selesai dengan catatan: {len(missing_items)} outlet belum lengkap / gagal ditarik live.")
+            else:
+                log(86, f"✅ Seluruh {len(expected_df)} outlet target berhasil ditarik lengkap.")
+
             go_n = len(owner_df[owner_df["Aplikator"] == "GoFood"]) if "Aplikator" in owner_df.columns else 0
             gr_n = len(owner_df[owner_df["Aplikator"] == "GrabFood"]) if "Aplikator" in owner_df.columns else 0
             sh_n = len(owner_df[owner_df["Aplikator"] == "ShopeeFood"]) if "Aplikator" in owner_df.columns else 0
@@ -859,6 +1005,9 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                         "filename": filename,
                         "filepath": str(file_path),
                         "total": len(owner_df),
+                        "completed_count": completed_count,
+                        "expected_count": len(expected_df),
+                        "missing_items": missing_items,
                         "gofood": go_n,
                         "grab": gr_n,
                         "shopee": sh_n,
@@ -869,10 +1018,15 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
 
             return {
                 "success": True,
+                "status": "PARTIAL" if is_partial else "FULL",
+                "is_partial": is_partial,
                 "owner": owner_name,
                 "filename": filename,
                 "filepath": str(file_path),
                 "total": len(owner_df),
+                "completed_count": completed_count,
+                "expected_count": len(expected_df),
+                "missing_items": missing_items,
                 "gofood": go_n,
                 "grab": gr_n,
                 "shopee": sh_n,
