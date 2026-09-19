@@ -76,3 +76,8 @@ Thumbs.db
 # Env
 .env
 
+# Anti-slop & cronjob caches
+anti-slop/
+cronjobsot/cache/
+cronjobsot/reports/
+

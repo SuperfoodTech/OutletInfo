@@ -1,0 +1,20 @@
+[Unit]
+Description=Outlet Info Weekly Batch Listing Sync (Scraping, Drive, Sheet SOT & Discord)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=radi
+WorkingDirectory=/home/radi/project/outletinfo
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/radi/project/outletinfo/.venv/bin/python /home/radi/project/outletinfo/cronjobsot/weekly_batch_sync.py
+
+# Limits and safety
+TimeoutStartSec=10800
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+
