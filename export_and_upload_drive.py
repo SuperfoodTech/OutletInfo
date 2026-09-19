@@ -202,6 +202,23 @@ def load_shopee_data():
     return pd.DataFrame()
 
 
+def get_known_shopee_merchants() -> list[str]:
+    """Mengambil daftar nama merchant Shopee yang diketahui dari cache merchant_list.json."""
+    try:
+        p = SHOPEE_DIR / "data" / "merchant_list.json"
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            body = data.get("data") or data
+            if isinstance(body, dict):
+                m_list = body.get("selectMerchant", {}).get("merchantList", [])
+                if not m_list and "merchantList" in body:
+                    m_list = body.get("merchantList", [])
+                return [m.get("merchantName", "").strip() for m in m_list if m.get("merchantName")]
+    except Exception:
+        pass
+    return []
+
+
 def load_vercel_data(force_live=False):
     """
     Memuat data outlet dari Google Sheet Vercel (Live CSV).
@@ -782,17 +799,67 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             o_shopee = v_df[(v_df["Nama Pemilik"].astype(str).str.strip().str.lower() == clean_owner.lower()) & (v_df["Aplikator"] == "ShopeeFood")]
             merchant_names = []
             if not o_shopee.empty:
+                known_shopee = get_known_shopee_merchants()
+                import re
+
+                def _norm(s):
+                    return re.sub(r'[^a-z0-9]', '', re.sub(r'\[.*?\]', '', (s or '').lower()))
+
                 for _, r in o_shopee.iterrows():
-                    for col in ["Merchant Name", "Nama Portal", "Nama Brand", "Nama Akses"]:
+                    candidates = []
+                    for col in ["Nama Portal", "Nama Akses", "Merchant Name", "Nama Brand", "Nama Outlet"]:
                         val = str(r.get(col) or "").strip()
-                        if val and val.lower() not in ("nan", "none", "-") and val not in merchant_names:
-                            # Filter spesifik jika retry_targets ditentukan
-                            if retry_targets is not None:
-                                shopee_targets = [str(t.get("portal") or t.get("outlet") or "").strip().lower() for t in retry_targets if "shopee" in str(t.get("aplikator", "")).lower()]
-                                if not any(st in val.lower() or val.lower() in st for st in shopee_targets if st):
+                        if val and val.lower() not in ("nan", "none", "-") and val not in candidates:
+                            candidates.append(val)
+
+                    if not candidates:
+                        continue
+
+                    best_match = None
+                    if known_shopee:
+                        for c in candidates:
+                            c_clean = c.lower().rstrip("_").strip()
+                            for k in known_shopee:
+                                if c_clean == k.lower().rstrip("_").strip():
+                                    best_match = k
+                                    break
+                            if best_match:
+                                break
+
+                        if not best_match:
+                            for c in candidates:
+                                c_norm = _norm(c)
+                                if not c_norm:
                                     continue
-                            merchant_names.append(val)
-                            break
+                                for k in known_shopee:
+                                    if c_norm == _norm(k):
+                                        best_match = k
+                                        break
+                                if best_match:
+                                    break
+
+                        if not best_match:
+                            for c in candidates:
+                                c_norm = _norm(c)
+                                if len(c_norm) >= 4:
+                                    for k in known_shopee:
+                                        k_norm = _norm(k)
+                                        if c_norm in k_norm or k_norm in c_norm:
+                                            best_match = k
+                                            break
+                                    if best_match:
+                                        break
+
+                    chosen_val = best_match or candidates[0]
+
+                    # Filter spesifik jika retry_targets ditentukan
+                    if retry_targets is not None:
+                        shopee_targets = [str(t.get("portal") or t.get("outlet") or "").strip().lower() for t in retry_targets if "shopee" in str(t.get("aplikator", "")).lower()]
+                        if not any(st in chosen_val.lower() or chosen_val.lower() in st for st in shopee_targets if st):
+                            continue
+
+                    if chosen_val not in merchant_names:
+                        merchant_names.append(chosen_val)
             
             if merchant_names:
                 headless_shopee = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")

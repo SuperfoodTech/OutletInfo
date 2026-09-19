@@ -1543,7 +1543,21 @@ def get_session(username=None, password=None, phone=None, headless=None, close_b
             active_id = None
             active_name = "Unknown Merchant"
             try:
-                driver_token = next((c["value"] for c in driver.get_cookies() if c["name"] == "shopee_tob_token"), "")
+                driver_token = ""
+                for c in driver.get_cookies():
+                    if c["name"] in ("__shopee_partner_website_x_token_live", "__shopee_partner_website_x_token"):
+                        try:
+                            import base64, json
+                            p = c["value"].split(".")[1]
+                            p += "=" * (-len(p) % 4)
+                            data = json.loads(base64.b64decode(p))
+                            if data.get("token"):
+                                driver_token = data["token"]
+                                break
+                        except Exception:
+                            pass
+                if not driver_token:
+                    driver_token = next((c["value"] for c in driver.get_cookies() if c["name"] == "shopee_tob_token"), "")
                 api_js = """
                 var token_arg = arguments[0];
                 var done = arguments[arguments.length - 1];
