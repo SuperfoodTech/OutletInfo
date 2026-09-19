@@ -19,6 +19,7 @@ import os
 import sys
 import time
 import math
+import base64
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -178,8 +179,89 @@ def norm_clean_name(s: str) -> str:
     import re
     return re.sub(r'[^a-z0-9]', '', re.sub(r'\[.*?\]', '', (s or '').lower()))
 
-def get_merchant_info(target_id=None, target_name=None) -> dict | None:
-    """Lookup merchant metadata by ID or name."""
+def extract_live_shopee_token(driver) -> str:
+    """Ekstraksi x-merchant-token dari cookie JWT modern Shopee Partner."""
+    try:
+        for c in driver.get_cookies():
+            if c.get("name") in ("__shopee_partner_website_x_token_live", "__shopee_partner_website_x_token"):
+                val = c.get("value", "")
+                if "." in val:
+                    p = val.split(".")[1]
+                    p += "=" * (-len(p) % 4)
+                    data = json.loads(base64.b64decode(p))
+                    if data.get("token"):
+                        return data["token"]
+        for c in driver.get_cookies():
+            if c.get("name") == "shopee_tob_token":
+                return c.get("value", "")
+    except Exception:
+        pass
+    return ""
+
+
+def sync_live_merchant_list(driver) -> list[dict]:
+    """
+    Sinkronisasi daftar merchant live dari endpoint internal Shopee Partner MerchantDetect.
+    Memperbarui file data/merchant_list.json serta cache memori.
+    """
+    token = extract_live_shopee_token(driver)
+    api_js = """
+    var done = arguments[arguments.length - 1];
+    var token_arg = arguments[0];
+    let token = token_arg || document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
+    fetch('https://api.partner.shopee.co.id/nb/mss/mer-detect-api/PartnerMerchantDetectServer/MerchantDetect', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-merchant-token': token || '',
+            'x-merchant-language': 'id',
+            'x-merchant-login-from': '12'
+        },
+        body: '{}',
+        credentials: 'include'
+    })
+    .then(r => r.json())
+    .then(d => done({ ok: true, data: d }))
+    .catch(e => done({ ok: false, error: String(e) }));
+    """
+    try:
+        driver.set_script_timeout(15)
+        res = driver.execute_async_script(api_js, token)
+        if res and res.get("ok"):
+            raw_data = res.get("data", {})
+            data_body = raw_data.get("data") or raw_data
+            if isinstance(data_body, dict):
+                m_list = data_body.get("selectMerchant", {}).get("merchantList", [])
+                if not m_list and "merchantList" in data_body:
+                    m_list = data_body.get("merchantList", [])
+                if m_list:
+                    print(f"  ✓ [SYNC] Berhasil mendeteksi {len(m_list)} merchant aktif dari Shopee MerchantDetect API.")
+                    cache_path = SCRIPT_DIR / "data" / "merchant_list.json"
+                    try:
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        cache_path.write_text(json.dumps(raw_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                        print(f"  ✓ [SYNC] Tersimpan ke cache disk: {cache_path.name}")
+                    except Exception as e:
+                        print(f"  [!] Gagal menyimpan ke {cache_path.name}: {e}")
+
+                    for item in m_list:
+                        m_id = item.get("merchantId")
+                        m_name = item.get("merchantName", "").strip()
+                        if not m_name:
+                            continue
+                        MERCHANT_INFO_MAP[str(m_id)] = item
+                        clean_m_nm = m_name.lower().rstrip("_").strip()
+                        if clean_m_nm not in MERCHANT_INFO_NAME_MAP:
+                            MERCHANT_INFO_NAME_MAP[clean_m_nm] = item
+
+                    return m_list
+    except Exception as e:
+        print(f"  [!] Exception saat sinkronisasi live MerchantDetect: {e}")
+    return []
+
+
+def get_merchant_info(target_id=None, target_name=None, driver=None) -> dict | None:
+    """Lookup merchant metadata by ID or name with live sync fallback."""
     if not MERCHANT_INFO_MAP:
         get_merchants_to_switch()
     if target_id and str(target_id) in MERCHANT_INFO_MAP:
@@ -195,6 +277,23 @@ def get_merchant_info(target_id=None, target_name=None) -> dict | None:
                 return v
             if clean_nm == k or clean_nm in k or k in clean_nm:
                 return v
+    if driver:
+        print(f"  🔄 [SYNC] Target '{target_name or target_id}' belum ada di cache. Menjalankan sinkronisasi live...")
+        live_list = sync_live_merchant_list(driver)
+        if live_list:
+            if target_id and str(target_id) in MERCHANT_INFO_MAP:
+                return MERCHANT_INFO_MAP[str(target_id)]
+            if target_name:
+                clean_nm = target_name.lower().rstrip("_").strip()
+                t_norm = norm_clean_name(target_name)
+                if clean_nm in MERCHANT_INFO_NAME_MAP:
+                    return MERCHANT_INFO_NAME_MAP[clean_nm]
+                for k, v in MERCHANT_INFO_NAME_MAP.items():
+                    k_norm = norm_clean_name(k)
+                    if t_norm and (k_norm == t_norm or t_norm in k_norm or k_norm in t_norm):
+                        return v
+                    if clean_nm == k or clean_nm in k or k in clean_nm:
+                        return v
     return None
 
 def get_merchants_to_switch() -> list[dict]:
@@ -346,14 +445,7 @@ def load_existing_results():
 
 def get_driver_user_info(driver) -> dict | None:
     """Fetch current active user info from internal Shopee API via driver."""
-    token = ""
-    try:
-        for c in driver.get_cookies():
-            if c.get("name") == "shopee_tob_token":
-                token = c.get("value", "")
-                break
-    except Exception:
-        pass
+    token = extract_live_shopee_token(driver)
 
     api_js = """
     var token_arg = arguments[0];
@@ -386,14 +478,7 @@ def direct_api_switch_merchant(driver, target_tob_uid: str | int) -> bool:
     Call internal Shopee Partner SwitchMerchant API directly within browser session.
     Endpoint: POST /nb/mss/mer-detect-api/PartnerMerchantDetectServer/SwitchMerchant
     """
-    token = ""
-    try:
-        for c in driver.get_cookies():
-            if c.get("name") == "shopee_tob_token":
-                token = c.get("value", "")
-                break
-    except Exception:
-        pass
+    token = extract_live_shopee_token(driver)
 
     api_js = """
     var done = arguments[arguments.length - 1];
@@ -447,7 +532,7 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
     target_tob_uid = CURRENT_TARGET_TOB_UID
 
     # Lookup target_tob_uid and target_id from cache if not already set
-    m_info = get_merchant_info(target_id=target_id, target_name=target_name)
+    m_info = get_merchant_info(target_id=target_id, target_name=target_name, driver=driver)
     if m_info:
         if not target_tob_uid:
             target_tob_uid = m_info.get("staffTobUid")
@@ -613,7 +698,7 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     lambda d: d.find_element(By.XPATH, "//span[contains(text(), 'Pilih Merchant') or contains(text(), 'Switch Merchant') or contains(text(), 'Ganti Merchant')] | //li[contains(., 'Pilih Merchant')]")
                 )
                 actions = ActionChains(driver)
-                actions.move_to_element(switch_trigger).click().perform()
+                actions.move_to_element(switch_trigger).perform()
                 dropdown_opened = True
                 time.sleep(1.5)
             except Exception:
@@ -622,7 +707,8 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     for (var s of spans) {
                         var text = (s.innerText || '').trim();
                         if (text.includes('Pilih Merchant Lain') || text.includes('Switch Merchant') || text.includes('Ganti Merchant')) {
-                            s.click();
+                            var evt = new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window });
+                            s.dispatchEvent(evt);
                             return true;
                         }
                     }
@@ -638,10 +724,10 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 continue
 
             # Tunggu seluruh daftar store pada popover selesai dimuat (loading spinner hilang)
-            for _ in range(15):
+            for _ in range(25):
                 spinning = driver.execute_script("""
                     var pop = document.querySelector('.switch-mechant, [class*="switch-mech"]');
-                    if (!pop) return false;
+                    if (!pop) return true;
                     return pop.querySelector('.ant-spin-spinning') !== null;
                 """)
                 if not spinning:
@@ -657,7 +743,8 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 var targetClean = targetRaw.replace(/_+$/, '').trim();
                 var targetNorm = norm(targetRaw);
                 var targetOccIdx = arguments[1] || 0;
-                var items = document.querySelectorAll('li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item, [class*="menu-item"]');
+                var pop = document.querySelector('.switch-mechant, [class*="switch-mech"]');
+                var items = pop ? pop.querySelectorAll('li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item, [class*="menu-item"], li') : document.querySelectorAll('li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item, [class*="menu-item"]');
                 
                 var exactMatches = [];
                 var normMatches = [];
@@ -672,10 +759,10 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     var textClean = text.replace(/_+$/, '').trim();
                     var textNorm = norm(text);
 
-                    if (targetNorm && textNorm === targetNorm) {
-                        normMatches.push(el);
-                    } else if (text === targetRaw) {
+                    if (text === targetRaw) {
                         exactMatches.push(el);
+                    } else if (targetNorm && textNorm === targetNorm) {
+                        normMatches.push(el);
                     } else if (targetClean && (text === targetClean || textClean === targetClean)) {
                         cleanMatches.push(el);
                     } else if (targetNorm && (textNorm.includes(targetNorm) || targetNorm.includes(textNorm))) {
@@ -685,23 +772,41 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     }
                 }
 
-                var matched = normMatches.length > 0 ? normMatches : (exactMatches.length > 0 ? exactMatches : (cleanMatches.length > 0 ? cleanMatches : partialMatches));
+                var matched = exactMatches.length > 0 ? exactMatches : (normMatches.length > 0 ? normMatches : (cleanMatches.length > 0 ? cleanMatches : partialMatches));
                 if (matched.length > 0) {
                     var chosenIdx = Math.min(targetOccIdx, matched.length - 1);
                     var chosen = matched[chosenIdx];
                     if (typeof chosen.scrollIntoView === 'function') chosen.scrollIntoView({block: 'center'});
                     
-                    ['mouseover', 'mouseenter', 'mousedown', 'mouseup', 'click'].forEach(function(evtType) {
+                    var menuId = chosen.getAttribute('data-menu-id') || '';
+                    var rProp = Object.keys(chosen).find(k => k.startsWith('__reactProps'));
+                    var methodUsed = 'dom';
+
+                    if (rProp && chosen[rProp] && typeof chosen[rProp].onClick === 'function') {
                         try {
-                            var evt = new MouseEvent(evtType, { bubbles: true, cancelable: true, view: window });
-                            chosen.dispatchEvent(evt);
+                            chosen[rProp].onClick({
+                                key: menuId,
+                                domEvent: { preventDefault: function(){}, stopPropagation: function(){} },
+                                item: chosen
+                            });
+                            methodUsed = 'reactProps.onClick';
                         } catch(e) {}
-                    });
-                    if (typeof chosen.click === 'function') {
-                        try { chosen.click(); } catch(e) {}
                     }
-                    var matchTypeStr = normMatches.length > 0 ? 'norm' : (exactMatches.length > 0 ? 'exact' : (cleanMatches.length > 0 ? 'clean' : 'partial'));
-                    return { ok: true, matchedCount: matched.length, clickedIdx: chosenIdx, matchType: matchTypeStr };
+
+                    if (methodUsed === 'dom') {
+                        ['mouseover', 'mouseenter', 'mousedown', 'mouseup', 'click'].forEach(function(evtType) {
+                            try {
+                                var evt = new MouseEvent(evtType, { bubbles: true, cancelable: true, view: window });
+                                chosen.dispatchEvent(evt);
+                            } catch(e) {}
+                        });
+                        if (typeof chosen.click === 'function') {
+                            try { chosen.click(); } catch(e) {}
+                        }
+                    }
+
+                    var matchTypeStr = exactMatches.length > 0 ? 'exact' : (normMatches.length > 0 ? 'norm' : (cleanMatches.length > 0 ? 'clean' : 'partial'));
+                    return { ok: true, matchedCount: matched.length, clickedIdx: chosenIdx, matchType: matchTypeStr, method: methodUsed, menuId: menuId, text: chosen.innerText };
                 }
                 return { ok: false, matchedCount: 0 };
             """
@@ -718,11 +823,12 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                 time.sleep(0.8)
 
             if found_res and found_res.get("ok"):
-                print(f"  ✅ Clicked '{target_name}' in submenu ({found_res.get('matchType', 'exact')} match, item {found_res.get('clickedIdx', 0)+1}/{found_res.get('matchedCount', 1)}).")
+                menu_id = found_res.get("menuId") or ""
+                print(f"  ✅ Clicked '{target_name}' in submenu ({found_res.get('matchType', 'exact')} match, item {found_res.get('clickedIdx', 0)+1}/{found_res.get('matchedCount', 1)}, method: {found_res.get('method', 'dom')}, menuId: {menu_id}).")
                 
-                # Wait dynamically up to 8s for UI name to update
+                # Wait dynamically up to 10s for UI name to update
                 switched_ok = False
-                for _ in range(8):
+                for sec in range(1, 11):
                     time.sleep(1)
                     try:
                         cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
@@ -732,6 +838,12 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                             break
                     except Exception:
                         pass
+                    # Backup: jika 3 detik belum beralih dan menuId memiliki UID, panggil direct API switch
+                    if sec == 3 and not switched_ok and menu_id:
+                        uid_candidate = menu_id.split("-")[-1]
+                        if uid_candidate.isdigit():
+                            print(f"  ⚡ [BACKUP DIRECT API] UI belum beralih setelah 3 detik. Mencoba direct API switch dengan UID {uid_candidate}...")
+                            direct_api_switch_merchant(driver, uid_candidate)
 
                 if "onboarding" in driver.current_url.lower():
                     browser._handle_onboarding_invitation(driver)
@@ -742,11 +854,9 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                     return True
                 else:
                     cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip() if driver.find_elements(By.CSS_SELECTOR, ".merchantName, .user-info") else "unknown"
-                    print(f"  ⚠️ Click berhasil tapi UI belum beralih ke '{target_name}' (saat ini: '{cur_nm}'). Menghentikan percobaan dropdown untuk login recovery langsung...")
-                    break
+                    print(f"  ⚠️ Click berhasil tapi UI belum beralih ke '{target_name}' (saat ini: '{cur_nm}'). Mencoba kembali...")
             else:
-                print(f"  ⚠️ Outlet '{target_name}' tidak ditemukan di dropdown. Menghentikan percobaan dropdown...")
-                break
+                print(f"  ⚠️ Outlet '{target_name}' tidak ditemukan di dropdown (Attempt {switch_attempt+1}/2).")
 
         # FINAL STRICT VERIFICATION
         final_ui = ""
@@ -834,6 +944,12 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, tar
     driver = session_data["driver"]
 
     try:
+        # Sinkronisasi merchant list terkini dari sesi aktif
+        try:
+            sync_live_merchant_list(driver)
+        except Exception:
+            pass
+
         # STRICT CHECK 1: Verifikasi nama merchant aktif di UI dashboard
         active_ui_name = ""
         try:
