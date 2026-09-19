@@ -1,0 +1,12 @@
+[Unit]
+Description=Timer for Outlet Info Weekly Batch Listing Sync (Every Sunday 21:00 WIB)
+
+[Timer]
+# Berjalan setiap hari Minggu pukul 21:00 (WIB)
+OnCalendar=Sun *-*-* 21:00:00 Asia/Jakarta
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
+
