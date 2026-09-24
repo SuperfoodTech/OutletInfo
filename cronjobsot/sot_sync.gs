@@ -162,7 +162,8 @@ function handleSyncOutlets(data) {
     var sid = storeIdColIdx !== -1 ? String(rowArray[storeIdColIdx] || "").trim() : "";
     if (sid.endsWith(".0")) sid = sid.slice(0, -2);
     
-    if (sid && sid !== "-" && sid !== "nan" && sid !== "none") {
+    var sidLower = sid.toLowerCase();
+    if (sid && sid !== "-" && sidLower !== "nan" && sidLower !== "none") {
       return app + "_" + sid;
     }
     var owner = ownerColIdx !== -1 ? String(rowArray[ownerColIdx] || "").trim().toLowerCase() : "";
