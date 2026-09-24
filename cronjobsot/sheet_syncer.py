@@ -22,17 +22,19 @@ TARGET_SPREADSHEET_ID = "15_Xx5ixOcxy0L90U_BrFHfVnAgjIZpiiGBEK4Ce4SyI"
 TARGET_SHEET_NAME = "SOT"
 TARGET_SHEET_GID = "2135653103"
 
-# 37 Kolom Template Standar (Kolom ke-38 'Terakhir Diperbaharui' ditambahkan oleh Apps Script)
+# 43 Kolom Template Standar DBR (Kolom ke-44 'Terakhir Diperbaharui' ditambahkan oleh Apps Script di tab SOT)
 STANDARD_HEADERS = [
     "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
-    "Aplikator", "Nama Portal", "Group ID", "Nama Listing", "Link", "Store ID",
+    "Aplikator", "Group ID", "Nama Listing", "Link", "Store ID",
     "Status Listing", "Alamat", "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
     "Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
     "Nama Portal", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
     "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
     "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
     "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
-    "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif"
+    "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif",
+    "Status Bot", "Vercel Kata Sandi", "Paket", "Tanggal Mulai Layanan",
+    "Tanggal Berakhir Layanan", "Akses Username", "Akses Kata Sandi"
 ]
 
 COL_ALIASES = {
@@ -94,7 +96,7 @@ def sync_outlets_to_google_sheet(
     df_or_rows,
     headers: list[str] = None,
     app_script_url: str = None,
-    chunk_size: int = 500
+    chunk_size: int = 25
 ) -> tuple[bool, dict]:
     """
     Mengirimkan baris outlet ke Apps Script untuk di-upsert ke Google Spreadsheet tab 'SOT'.
@@ -104,7 +106,12 @@ def sync_outlets_to_google_sheet(
     if not url:
         return False, {"error": "APP_SCRIPT_URL belum disetel di .env"}
 
-    active_headers = headers or STANDARD_HEADERS
+    active_headers = headers
+    if not active_headers:
+        if isinstance(df_or_rows, pd.DataFrame) and len(df_or_rows.columns) >= 30:
+            active_headers = [c for c in df_or_rows.columns if c != "Terakhir Diperbaharui"]
+        else:
+            active_headers = STANDARD_HEADERS
 
     if isinstance(df_or_rows, pd.DataFrame):
         rows = format_dataframe_to_rows(df_or_rows, active_headers)
