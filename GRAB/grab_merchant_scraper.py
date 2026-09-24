@@ -50,6 +50,25 @@ LOCAL_CRED_CSV = os.path.join(BASE_DIR, 'A. Credential (Outlet & Access)  - Uniq
 DEFAULT_GRAB_PASSWORD = os.getenv("DEFAULT_GRAB_PASSWORD", "Master@123")
 
 
+def format_grab_food_link(store_id_or_link: str) -> str:
+    """
+    Format ID Toko atau Link GrabFood ke URL Konsumen GrabFood:
+    https://food.grab.com/id/id/restaurant/x/{clean_id}/
+    di mana {clean_id} adalah ID tanpa tanda strip '-'.
+    """
+    if not store_id_or_link:
+        return ""
+    val = str(store_id_or_link).strip()
+    if not val or val.lower() in ('nan', 'none'):
+        return ""
+    if "grab.com" in val:
+        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
+    clean_id = val.replace("-", "").strip()
+    if not clean_id:
+        return ""
+    return f"https://food.grab.com/id/id/restaurant/x/{clean_id}/"
+
+
 def get_safe_cache_filename(portal_name):
     """Menghasilkan nama file cache yang aman dari batasan panjang sistem operasi (maks 255 karakter)."""
     clean = re.sub(r'[^a-zA-Z0-9_.-]', '_', str(portal_name).strip())
@@ -747,7 +766,7 @@ async def fetch_merchant_list_fast(headers, cookies_dict, cred, max_retries=3):
             if not merchant_id:
                 continue
 
-            link_menu = f"https://merchant.grab.com/food/menu/{merchant_id}" if merchant_id else ""
+            link_menu = format_grab_food_link(merchant_id)
             all_results.append({
                 "Nama Pemilik": cred.get("owner", ""),
                 "Nama Brand": cred.get("brand", ""),
@@ -1036,7 +1055,7 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
             if not no_rekening:
                 no_rekening = group_acc_no
 
-            link_menu = f"https://merchant.grab.com/food/menu/{merchant_id}" if merchant_id else ""
+            link_menu = format_grab_food_link(merchant_id)
 
             all_results.append({
                 "Nama Pemilik": cred.get("owner", ""),
@@ -1108,7 +1127,8 @@ def save_formatted_excel(df, file_path):
         ws.cell(row=idx, column=8, value=str(r.get('Nama Portal') or '') if pd.notna(r.get('Nama Portal')) else '') # H: Nama Portal
         ws.cell(row=idx, column=9, value=str(r.get('Group ID') or '') if pd.notna(r.get('Group ID')) else '')       # I: Group ID
         ws.cell(row=idx, column=10, value=str(r.get('Nama Listing') or '') if pd.notna(r.get('Nama Listing')) else '') # J: Nama Listing
-        ws.cell(row=idx, column=11, value=str(r.get('Link') or '') if pd.notna(r.get('Link')) else '')             # K: Link
+        grab_link = format_grab_food_link(r.get('Link') or r.get('Store ID') or '')
+        ws.cell(row=idx, column=11, value=grab_link)             # K: Link
         ws.cell(row=idx, column=12, value=str(r.get('Store ID') or '') if pd.notna(r.get('Store ID')) else '')     # L: Store ID
         ws.cell(row=idx, column=13, value=str(r.get('Status Listing') or '') if pd.notna(r.get('Status Listing')) else '') # M: Status Listing
         ws.cell(row=idx, column=14, value=str(r.get('Alamat') or '') if pd.notna(r.get('Alamat')) else '')         # N: Alamat

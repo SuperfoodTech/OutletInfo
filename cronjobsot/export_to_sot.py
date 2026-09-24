@@ -43,7 +43,13 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 load_dotenv(BASE_DIR / ".env")
 
-from sheet_syncer import sync_outlets_to_google_sheet, TARGET_SPREADSHEET_ID, TARGET_SHEET_NAME, TARGET_SHEET_GID
+from sheet_syncer import (
+    sync_outlets_to_google_sheet,
+    format_grab_food_link,
+    TARGET_SPREADSHEET_ID,
+    TARGET_SHEET_NAME,
+    TARGET_SHEET_GID
+)
 
 GOOGLE_SHEET_DBR_URL = os.getenv("GOOGLE_SHEET_DBR_URL", "")
 SOT_APP_SCRIPT_URL = os.getenv("SOT_APP_SCRIPT_URL", os.getenv("APP_SCRIPT_URL", ""))
@@ -170,6 +176,17 @@ def load_dbr_master_data(force_live: bool = False) -> pd.DataFrame:
     if "Status Listing" not in df.columns:
         df["Status Listing"] = "LIVE"
 
+    # Normalisasi link GrabFood ke format: https://food.grab.com/id/id/restaurant/x/{clean_id}/
+    if "Aplikator" in df.columns and "Link" in df.columns:
+        is_grab = df["Aplikator"].astype(str).str.lower().str.contains("grab")
+        if is_grab.any():
+            if "Store ID" in df.columns:
+                df.loc[is_grab, "Link"] = df[is_grab].apply(
+                    lambda r: format_grab_food_link(r.get("Link") or r.get("Store ID")), axis=1
+                )
+            else:
+                df.loc[is_grab, "Link"] = df.loc[is_grab, "Link"].apply(format_grab_food_link)
+
     return df
 
 
@@ -201,6 +218,11 @@ def load_all_local_masters() -> pd.DataFrame:
         try:
             df_gr = pd.read_excel(str(grab_master), sheet_name="Listing")
             df_gr["Aplikator"] = "GrabFood"
+            if "Link" in df_gr.columns:
+                sid_col = "Store ID" if "Store ID" in df_gr.columns else "Link"
+                df_gr["Link"] = df_gr.apply(
+                    lambda r: format_grab_food_link(r.get("Link") or r.get(sid_col)), axis=1
+                )
             records.append(df_gr)
             print(f"   ✓ Memuat GrabFood master: {len(df_gr)} outlet")
         except Exception as e:

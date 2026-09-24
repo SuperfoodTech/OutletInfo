@@ -107,9 +107,21 @@ function handleSyncOutlets(data) {
     headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   }
   
-  // Jika sheet kosong, inisialisasi headers dari payload
+  // Jika sheet kosong, atau jika diminta reset / struktur header berbeda
   var incomingHeaders = data.headers || [];
-  if (headers.length === 0 || !headers[0]) {
+  var shouldResetHeaders = data.resetHeaders === true || data.action === "reset_sot";
+
+  if (!shouldResetHeaders && incomingHeaders.length > 0 && headers.length > 0) {
+    var firstCurrent = String(headers[0] || "").trim().toLowerCase();
+    var firstIncoming = String(incomingHeaders[0] || "").trim().toLowerCase();
+    if (firstCurrent !== firstIncoming || Math.abs(headers.length - (incomingHeaders.length + 1)) > 1) {
+      shouldResetHeaders = true;
+    }
+  }
+
+  if (shouldResetHeaders || headers.length === 0 || !headers[0]) {
+    sheet.clearContents();
+    sheet.clearFormats();
     headers = incomingHeaders.slice();
     if (headers.indexOf("Terakhir Diperbaharui") === -1) {
       headers.push("Terakhir Diperbaharui");
@@ -166,8 +178,10 @@ function handleSyncOutlets(data) {
       return app + "_" + sid;
     }
     var owner = ownerColIdx !== -1 ? String(rowArray[ownerColIdx] || "").trim().toLowerCase() : "";
-    var outlet = outletColIdx !== -1 ? String(rowArray[outletColIdx] || "").trim().toLowerCase() : "";
-    return app + "_" + owner + "_" + outlet;
+    if (owner) {
+      return app + "_" + owner + "_" + outlet;
+    }
+    return app + "_" + outlet;
   }
   
   var keyToRowIdx = {};

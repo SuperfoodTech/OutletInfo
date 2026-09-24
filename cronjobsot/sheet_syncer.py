@@ -22,32 +22,51 @@ TARGET_SPREADSHEET_ID = "15_Xx5ixOcxy0L90U_BrFHfVnAgjIZpiiGBEK4Ce4SyI"
 TARGET_SHEET_NAME = "SOT"
 TARGET_SHEET_GID = "2135653103"
 
-# 37 Kolom Template Standar (Kolom ke-38 'Terakhir Diperbaharui' ditambahkan oleh Apps Script)
+# 10 Kolom Template Resmi Tab SOT (Kolom ke-11 'Terakhir Diperbaharui' ditambahkan oleh Apps Script)
 STANDARD_HEADERS = [
-    "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
-    "Aplikator", "Nama Portal", "Group ID", "Nama Listing", "Link", "Store ID",
-    "Status Listing", "Alamat", "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
-    "Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
-    "Nama Portal", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
-    "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
-    "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
-    "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
-    "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif"
+    "Aplikator",
+    "Group ID",
+    "Nama Listing",
+    "Link",
+    "Store ID",
+    "Status Listing",
+    "Alamat",
+    "Nama Bank",
+    "Nama Pemilik Rekening",
+    "Nomor Rekening"
 ]
 
 COL_ALIASES = {
-    'Nama Pemilik': ['Owner', 'Nama Pemilik', 'owner', 'pemilik'],
-    'Nama Brand': ['Nama Outlet', 'Nama Brand', 'Brand', 'brand'],
     'Aplikator': ['Aplikasi', 'Aplikator', 'app', 'Platform'],
-    'Nama Portal': ['Nama Akses', 'Nama Portal', 'Merchant Name', 'portal'],
-    'Nama Listing': ['Nama Listing', 'Nama Outlet', 'Nama Brand', 'Listing'],
-    'Nomor HP Akses Pemilik': ['S Nomor HP Akses Pemilik', 'Nomor HP Akses Pemilik', 'Nomor HP'],
-    'Username Akses Pemilik': ['S Username Akses Pemilik', 'Username Akses Pemilik'],
-    'Kata Sandi Akses Pemilik': ['S Kata Sandi Akses Pemilik', 'Kata Sandi Akses Pemilik'],
-    'S BD Username Akses Staff': ['S Username Akses Staff', 'S BD Username Akses Staff', 'Username Akses Staff'],
-    'S BD Kata Sandi Akses Staff': ['S Kata Sandi Akses Staff', 'S BD Kata Sandi Akses Staff', 'Kata Sandi Akses Staff'],
-    'BD': ['BD', 'bd'],
+    'Group ID': ['Group ID', 'group_id', 'GroupID', 'idmg', 'IDMG'],
+    'Nama Listing': ['Nama Listing', 'Nama Outlet', 'Nama Brand', 'Listing', 'Outlet', 'store_name'],
+    'Link': ['Link', 'link', 'URL', 'url', 'link_menu'],
+    'Store ID': ['Store ID', 'store_id', 'StoreID', 'merchant_id'],
+    'Status Listing': ['Status Listing', 'status_listing', 'Status', 'status'],
+    'Alamat': ['Alamat', 'alamat', 'Address', 'address'],
+    'Nama Bank': ['Nama Bank', 'nama_bank', 'Bank', 'bank'],
+    'Nama Pemilik Rekening': ['Nama Pemilik Rekening', 'nama_pemilik_rekening', 'Nama Rekening', 'Account Name'],
+    'Nomor Rekening': ['Nomor Rekening', 'nomor_rekening', 'No Rekening', 'Account Number'],
 }
+
+
+def format_grab_food_link(store_id_or_link: str) -> str:
+    """
+    Format ID Toko atau Link GrabFood ke URL Konsumen GrabFood:
+    https://food.grab.com/id/id/restaurant/x/{clean_id}/
+    di mana {clean_id} adalah ID tanpa tanda strip '-'.
+    """
+    if not store_id_or_link:
+        return ""
+    val = str(store_id_or_link).strip()
+    if not val or val.lower() in ('nan', 'none'):
+        return ""
+    if "grab.com" in val:
+        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
+    clean_id = val.replace("-", "").strip()
+    if not clean_id:
+        return ""
+    return f"https://food.grab.com/id/id/restaurant/x/{clean_id}/"
 
 
 def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]:
@@ -63,18 +82,13 @@ def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]
                 row_vals.append("")
                 continue
 
-            if h in ('Nama Brand', 'Brand'):
-                val = r.get('Nama Outlet')
-                if val is None or pd.isna(val) or str(val).strip() == '':
-                    val = r.get('Nama Brand') or r.get('Brand')
-            else:
-                val = r.get(h)
-                if val is None or pd.isna(val) or str(val).strip() == '':
-                    aliases = COL_ALIASES.get(h, [])
-                    for alias in aliases:
-                        if alias in r and pd.notna(r.get(alias)) and str(r.get(alias)).strip() != '':
-                            val = r.get(alias)
-                            break
+            val = r.get(h)
+            if val is None or pd.isna(val) or str(val).strip() == '':
+                aliases = COL_ALIASES.get(h, [])
+                for alias in aliases:
+                    if alias in r and pd.notna(r.get(alias)) and str(r.get(alias)).strip() != '':
+                        val = r.get(alias)
+                        break
 
             val_str = str(val).strip() if pd.notna(val) and val is not None else ''
             if val_str.lower() in ('nan', 'none'):
@@ -83,6 +97,13 @@ def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]
             # Bersihkan suffix .0 pada angka/ID panjang
             if val_str.endswith(".0") and val_str[:-2].isdigit():
                 val_str = val_str[:-2]
+
+            # Normalisasi kolom Link untuk GrabFood ke format URL konsumen
+            if h == 'Link':
+                app_val = str(r.get('Aplikator') or r.get('Aplikasi') or '').strip().lower()
+                if 'grab' in app_val:
+                    target_ref = val_str or str(r.get('Store ID') or '').strip()
+                    val_str = format_grab_food_link(target_ref)
 
             row_vals.append(val_str)
         rows.append(row_vals)
@@ -94,7 +115,7 @@ def sync_outlets_to_google_sheet(
     df_or_rows,
     headers: list[str] = None,
     app_script_url: str = None,
-    chunk_size: int = 500
+    chunk_size: int = 25
 ) -> tuple[bool, dict]:
     """
     Mengirimkan baris outlet ke Apps Script untuk di-upsert ke Google Spreadsheet tab 'SOT'.
@@ -135,7 +156,8 @@ def sync_outlets_to_google_sheet(
             "sheetName": TARGET_SHEET_NAME,
             "gid": TARGET_SHEET_GID,
             "headers": active_headers,
-            "rows": chunk
+            "rows": chunk,
+            "resetHeaders": True if i == 0 else False
         }
 
         try:
