@@ -22,8 +22,23 @@ TARGET_SPREADSHEET_ID = "15_Xx5ixOcxy0L90U_BrFHfVnAgjIZpiiGBEK4Ce4SyI"
 TARGET_SHEET_NAME = "SOT"
 TARGET_SHEET_GID = "2135653103"
 
-# 10 Kolom Template Resmi Tab SOT (Kolom ke-11 'Terakhir Diperbaharui' ditambahkan oleh Apps Script)
+# 43 Kolom Template Standar DBR (Kolom ke-44 'Terakhir Diperbaharui' ditambahkan oleh Apps Script di tab SOT)
 STANDARD_HEADERS = [
+    "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
+    "Aplikator", "Group ID", "Nama Listing", "Link", "Store ID",
+    "Status Listing", "Alamat", "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
+    "Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
+    "Nama Portal", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
+    "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
+    "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
+    "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
+    "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif",
+    "Status Bot", "Vercel Kata Sandi", "Paket", "Tanggal Mulai Layanan",
+    "Tanggal Berakhir Layanan", "Akses Username", "Akses Kata Sandi"
+]
+
+# Kolom yang hanya diisi nilainya pada tab SOT (kolom selain ini dibiarkan kosong "")
+SOT_FILLED_COLUMNS = {
     "Aplikator",
     "Group ID",
     "Nama Listing",
@@ -34,19 +49,27 @@ STANDARD_HEADERS = [
     "Nama Bank",
     "Nama Pemilik Rekening",
     "Nomor Rekening"
-]
+}
 
 COL_ALIASES = {
+    'Nama Pemilik': ['Owner', 'Nama Pemilik', 'owner', 'pemilik'],
+    'Nama Brand': ['Nama Outlet', 'Nama Brand', 'Brand', 'brand'],
     'Aplikator': ['Aplikasi', 'Aplikator', 'app', 'Platform'],
+    'Nama Portal': ['Nama Akses', 'Nama Portal', 'Merchant Name', 'portal'],
+    'Nama Listing': ['Nama Listing', 'Nama Outlet', 'Nama Brand', 'Listing', 'store_name', 'outlet'],
     'Group ID': ['Group ID', 'group_id', 'GroupID', 'idmg', 'IDMG'],
-    'Nama Listing': ['Nama Listing', 'Nama Outlet', 'Nama Brand', 'Listing', 'Outlet', 'store_name'],
-    'Link': ['Link', 'link', 'URL', 'url', 'link_menu'],
     'Store ID': ['Store ID', 'store_id', 'StoreID', 'merchant_id'],
     'Status Listing': ['Status Listing', 'status_listing', 'Status', 'status'],
     'Alamat': ['Alamat', 'alamat', 'Address', 'address'],
     'Nama Bank': ['Nama Bank', 'nama_bank', 'Bank', 'bank'],
     'Nama Pemilik Rekening': ['Nama Pemilik Rekening', 'nama_pemilik_rekening', 'Nama Rekening', 'Account Name'],
     'Nomor Rekening': ['Nomor Rekening', 'nomor_rekening', 'No Rekening', 'Account Number'],
+    'Nomor HP Akses Pemilik': ['S Nomor HP Akses Pemilik', 'Nomor HP Akses Pemilik', 'Nomor HP'],
+    'Username Akses Pemilik': ['S Username Akses Pemilik', 'Username Akses Pemilik'],
+    'Kata Sandi Akses Pemilik': ['S Kata Sandi Akses Pemilik', 'Kata Sandi Akses Pemilik'],
+    'S BD Username Akses Staff': ['S Username Akses Staff', 'S BD Username Akses Staff', 'Username Akses Staff'],
+    'S BD Kata Sandi Akses Staff': ['S Kata Sandi Akses Staff', 'S BD Kata Sandi Akses Staff', 'Kata Sandi Akses Staff'],
+    'BD': ['BD', 'bd'],
 }
 
 
@@ -79,6 +102,11 @@ def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]
         row_vals = []
         for h in headers:
             if not h:
+                row_vals.append("")
+                continue
+
+            # Pada tab SOT, hanya isi kolom-kolom yang ditentukan, sisanya dibiarkan kosong ("")
+            if h not in SOT_FILLED_COLUMNS:
                 row_vals.append("")
                 continue
 
@@ -156,8 +184,7 @@ def sync_outlets_to_google_sheet(
             "sheetName": TARGET_SHEET_NAME,
             "gid": TARGET_SHEET_GID,
             "headers": active_headers,
-            "rows": chunk,
-            "resetHeaders": True if i == 0 else False
+            "rows": chunk
         }
 
         try:

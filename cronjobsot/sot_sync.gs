@@ -107,21 +107,9 @@ function handleSyncOutlets(data) {
     headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   }
   
-  // Jika sheet kosong, atau jika diminta reset / struktur header berbeda
+  // Jika sheet kosong, inisialisasi headers dari payload
   var incomingHeaders = data.headers || [];
-  var shouldResetHeaders = data.resetHeaders === true || data.action === "reset_sot";
-
-  if (!shouldResetHeaders && incomingHeaders.length > 0 && headers.length > 0) {
-    var firstCurrent = String(headers[0] || "").trim().toLowerCase();
-    var firstIncoming = String(incomingHeaders[0] || "").trim().toLowerCase();
-    if (firstCurrent !== firstIncoming || Math.abs(headers.length - (incomingHeaders.length + 1)) > 1) {
-      shouldResetHeaders = true;
-    }
-  }
-
-  if (shouldResetHeaders || headers.length === 0 || !headers[0]) {
-    sheet.clearContents();
-    sheet.clearFormats();
+  if (headers.length === 0 || !headers[0]) {
     headers = incomingHeaders.slice();
     if (headers.indexOf("Terakhir Diperbaharui") === -1) {
       headers.push("Terakhir Diperbaharui");
