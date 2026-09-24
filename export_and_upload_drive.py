@@ -54,6 +54,25 @@ GOOGLE_SHEET_VERCEL_URL = os.getenv(
 APP_SCRIPT_URL = os.getenv("APP_SCRIPT_URL", "")
 
 
+def format_grab_food_link(store_id_or_link: str) -> str:
+    """
+    Format ID Toko atau Link GrabFood ke URL Konsumen GrabFood:
+    https://food.grab.com/id/id/restaurant/x/{clean_id}/
+    di mana {clean_id} adalah ID tanpa tanda strip '-'.
+    """
+    if not store_id_or_link:
+        return ""
+    val = str(store_id_or_link).strip()
+    if not val or val.lower() in ('nan', 'none'):
+        return ""
+    if "grab.com" in val:
+        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
+    clean_id = val.replace("-", "").strip()
+    if not clean_id:
+        return ""
+    return f"https://food.grab.com/id/id/restaurant/x/{clean_id}/"
+
+
 def get_template_headers():
     """Mengambil 37 kolom header resmi dari file template."""
     if TEMPLATE_PATH.exists():
@@ -178,6 +197,12 @@ def load_grab_data():
         combined = pd.concat(records, ignore_index=True)
         if "Store ID" in combined.columns:
             combined = combined.drop_duplicates(subset=["Store ID"], keep="last")
+        if "Link" in combined.columns or "Store ID" in combined.columns:
+            def _normalize_grab_link(row):
+                sid = row.get("Store ID") if pd.notna(row.get("Store ID")) else ""
+                link = row.get("Link") if pd.notna(row.get("Link")) else ""
+                return format_grab_food_link(link or sid)
+            combined["Link"] = combined.apply(_normalize_grab_link, axis=1)
         return combined
 
     return pd.DataFrame()
@@ -358,6 +383,13 @@ def write_data_to_sheet(ws, df, headers):
             # Bersihkan suffix .0 pada angka/nomor panjang
             if val_str.endswith(".0") and val_str[:-2].isdigit():
                 val_str = val_str[:-2]
+
+            # Normalisasi kolom Link untuk GrabFood ke format URL konsumen
+            if h == 'Link':
+                app_name = str(r.get('Aplikator') or r.get('Aplikasi') or '').strip().lower()
+                if 'grab' in app_name:
+                    sid = str(r.get('Store ID') or '').strip()
+                    val_str = format_grab_food_link(val_str or sid)
 
             cell = ws.cell(row=idx, column=c_idx, value=val_str)
             cell.font = body_font

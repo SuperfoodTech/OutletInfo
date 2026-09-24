@@ -52,6 +52,25 @@ COL_ALIASES = {
 }
 
 
+def format_grab_food_link(store_id_or_link: str) -> str:
+    """
+    Format ID Toko atau Link GrabFood ke URL Konsumen GrabFood:
+    https://food.grab.com/id/id/restaurant/x/{clean_id}/
+    di mana {clean_id} adalah ID tanpa tanda strip '-'.
+    """
+    if not store_id_or_link:
+        return ""
+    val = str(store_id_or_link).strip()
+    if not val or val.lower() in ('nan', 'none'):
+        return ""
+    if "grab.com" in val:
+        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
+    clean_id = val.replace("-", "").strip()
+    if not clean_id:
+        return ""
+    return f"https://food.grab.com/id/id/restaurant/x/{clean_id}/"
+
+
 def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]:
     """Mengubah DataFrame outlet ke bentuk list of lists sesuai urutan header template."""
     rows = []
@@ -85,6 +104,13 @@ def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]
             # Bersihkan suffix .0 pada angka/ID panjang
             if val_str.endswith(".0") and val_str[:-2].isdigit():
                 val_str = val_str[:-2]
+
+            # Normalisasi kolom Link untuk GrabFood ke format URL konsumen
+            if h == 'Link':
+                app_val = str(r.get('Aplikator') or r.get('Aplikasi') or '').strip().lower()
+                if 'grab' in app_val:
+                    target_ref = val_str or str(r.get('Store ID') or '').strip()
+                    val_str = format_grab_food_link(target_ref)
 
             row_vals.append(val_str)
         rows.append(row_vals)
