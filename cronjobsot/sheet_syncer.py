@@ -22,33 +22,31 @@ TARGET_SPREADSHEET_ID = "15_Xx5ixOcxy0L90U_BrFHfVnAgjIZpiiGBEK4Ce4SyI"
 TARGET_SHEET_NAME = "SOT"
 TARGET_SHEET_GID = "2135653103"
 
-# 43 Kolom Template Standar DBR (Kolom ke-44 'Terakhir Diperbaharui' ditambahkan oleh Apps Script di tab SOT)
+# 10 Kolom Template Resmi Tab SOT (Kolom ke-11 'Terakhir Diperbaharui' ditambahkan oleh Apps Script)
 STANDARD_HEADERS = [
-    "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
-    "Aplikator", "Group ID", "Nama Listing", "Link", "Store ID",
-    "Status Listing", "Alamat", "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
-    "Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
-    "Nama Portal", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
-    "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
-    "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
-    "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
-    "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif",
-    "Status Bot", "Vercel Kata Sandi", "Paket", "Tanggal Mulai Layanan",
-    "Tanggal Berakhir Layanan", "Akses Username", "Akses Kata Sandi"
+    "Aplikator",
+    "Group ID",
+    "Nama Listing",
+    "Link",
+    "Store ID",
+    "Status Listing",
+    "Alamat",
+    "Nama Bank",
+    "Nama Pemilik Rekening",
+    "Nomor Rekening"
 ]
 
 COL_ALIASES = {
-    'Nama Pemilik': ['Owner', 'Nama Pemilik', 'owner', 'pemilik'],
-    'Nama Brand': ['Nama Outlet', 'Nama Brand', 'Brand', 'brand'],
     'Aplikator': ['Aplikasi', 'Aplikator', 'app', 'Platform'],
-    'Nama Portal': ['Nama Akses', 'Nama Portal', 'Merchant Name', 'portal'],
-    'Nama Listing': ['Nama Listing', 'Nama Outlet', 'Nama Brand', 'Listing'],
-    'Nomor HP Akses Pemilik': ['S Nomor HP Akses Pemilik', 'Nomor HP Akses Pemilik', 'Nomor HP'],
-    'Username Akses Pemilik': ['S Username Akses Pemilik', 'Username Akses Pemilik'],
-    'Kata Sandi Akses Pemilik': ['S Kata Sandi Akses Pemilik', 'Kata Sandi Akses Pemilik'],
-    'S BD Username Akses Staff': ['S Username Akses Staff', 'S BD Username Akses Staff', 'Username Akses Staff'],
-    'S BD Kata Sandi Akses Staff': ['S Kata Sandi Akses Staff', 'S BD Kata Sandi Akses Staff', 'Kata Sandi Akses Staff'],
-    'BD': ['BD', 'bd'],
+    'Group ID': ['Group ID', 'group_id', 'GroupID', 'idmg', 'IDMG'],
+    'Nama Listing': ['Nama Listing', 'Nama Outlet', 'Nama Brand', 'Listing', 'Outlet', 'store_name'],
+    'Link': ['Link', 'link', 'URL', 'url', 'link_menu'],
+    'Store ID': ['Store ID', 'store_id', 'StoreID', 'merchant_id'],
+    'Status Listing': ['Status Listing', 'status_listing', 'Status', 'status'],
+    'Alamat': ['Alamat', 'alamat', 'Address', 'address'],
+    'Nama Bank': ['Nama Bank', 'nama_bank', 'Bank', 'bank'],
+    'Nama Pemilik Rekening': ['Nama Pemilik Rekening', 'nama_pemilik_rekening', 'Nama Rekening', 'Account Name'],
+    'Nomor Rekening': ['Nomor Rekening', 'nomor_rekening', 'No Rekening', 'Account Number'],
 }
 
 
@@ -84,18 +82,13 @@ def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]
                 row_vals.append("")
                 continue
 
-            if h in ('Nama Brand', 'Brand'):
-                val = r.get('Nama Outlet')
-                if val is None or pd.isna(val) or str(val).strip() == '':
-                    val = r.get('Nama Brand') or r.get('Brand')
-            else:
-                val = r.get(h)
-                if val is None or pd.isna(val) or str(val).strip() == '':
-                    aliases = COL_ALIASES.get(h, [])
-                    for alias in aliases:
-                        if alias in r and pd.notna(r.get(alias)) and str(r.get(alias)).strip() != '':
-                            val = r.get(alias)
-                            break
+            val = r.get(h)
+            if val is None or pd.isna(val) or str(val).strip() == '':
+                aliases = COL_ALIASES.get(h, [])
+                for alias in aliases:
+                    if alias in r and pd.notna(r.get(alias)) and str(r.get(alias)).strip() != '':
+                        val = r.get(alias)
+                        break
 
             val_str = str(val).strip() if pd.notna(val) and val is not None else ''
             if val_str.lower() in ('nan', 'none'):
@@ -132,12 +125,7 @@ def sync_outlets_to_google_sheet(
     if not url:
         return False, {"error": "APP_SCRIPT_URL belum disetel di .env"}
 
-    active_headers = headers
-    if not active_headers:
-        if isinstance(df_or_rows, pd.DataFrame) and len(df_or_rows.columns) >= 30:
-            active_headers = [c for c in df_or_rows.columns if c != "Terakhir Diperbaharui"]
-        else:
-            active_headers = STANDARD_HEADERS
+    active_headers = headers or STANDARD_HEADERS
 
     if isinstance(df_or_rows, pd.DataFrame):
         rows = format_dataframe_to_rows(df_or_rows, active_headers)
@@ -168,7 +156,8 @@ def sync_outlets_to_google_sheet(
             "sheetName": TARGET_SHEET_NAME,
             "gid": TARGET_SHEET_GID,
             "headers": active_headers,
-            "rows": chunk
+            "rows": chunk,
+            "resetHeaders": True if i == 0 else False
         }
 
         try:
