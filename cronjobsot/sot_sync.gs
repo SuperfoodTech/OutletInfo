@@ -166,6 +166,7 @@ function handleSyncOutlets(data) {
       return app + "_" + sid;
     }
     var owner = ownerColIdx !== -1 ? String(rowArray[ownerColIdx] || "").trim().toLowerCase() : "";
+    var outlet = outletColIdx !== -1 ? String(rowArray[outletColIdx] || "").trim().toLowerCase() : "";
     if (owner) {
       return app + "_" + owner + "_" + outlet;
     }
