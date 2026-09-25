@@ -58,15 +58,23 @@ from dotenv import load_dotenv
 
 load_dotenv(SCRIPT_DIR.parent / ".env")
 HEADLESS_DEFAULT = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+if not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+    HEADLESS_DEFAULT = True
 
-# FORCE the profile directory (always use authenticated profile_allvbadmin)
+CURRENT_ACTIVE_ACCOUNT = "allvbadmin"
+
+# FORCE the profile directory (dynamic based on active account)
 orig_add_argument = Options.add_argument
 def custom_add_argument(self, argument):
     if "--user-data-dir=" in argument:
-        argument = f"--user-data-dir={CHROME_PROFILE_DIR}"
+        if CURRENT_ACTIVE_ACCOUNT == "allvbadmin":
+            pdir = CHROME_PROFILE_DIR
+        else:
+            pdir = SCRIPT_DIR / "data" / f"chrome_profile_{CURRENT_ACTIVE_ACCOUNT}"
+        argument = f"--user-data-dir={pdir}"
         print(f"🔧 [PATCH] Mengalihkan user data dir ke: {argument}")
     elif "--profile-directory=" in argument:
-        argument = "--profile-directory=profile_allvbadmin"
+        argument = f"--profile-directory=profile_{CURRENT_ACTIVE_ACCOUNT}"
         print(f"🔧 [PATCH] Mengalihkan profile directory ke: {argument}")
     orig_add_argument(self, argument)
 Options.add_argument = custom_add_argument
@@ -890,34 +898,45 @@ browser.auto_switch_merchant = enhanced_auto_switch_merchant
 # ──────────────────────────────────────────────────────────────
 # Authentication
 # ──────────────────────────────────────────────────────────────
-def get_auth_session(target_name: str, target_merchant_id: str | int = None, target_tob_uid: str | int = None, occurrence_index: int = 0, headless: bool = None) -> tuple:
+def get_auth_session(target_name: str, target_merchant_id: str | int = None, target_tob_uid: str | int = None, occurrence_index: int = 0, headless: bool = None, custom_username: str = None, custom_password: str = None) -> tuple:
     """
-    Launch browser, login as allvbadmin, switch to target merchant by ID/name, extract tokens, close browser.
+    Launch browser, login as allvbadmin (or custom account), switch to target merchant if applicable, extract tokens, close browser.
     STRICT VALIDATION: Verifies active merchant name & ID. Never allows cross-merchant contamination.
     Returns (tob_token, entity_id, extra_cookies) or raises RuntimeError on failure.
     """
-    global CURRENT_OCCURRENCE_INDEX, CURRENT_TARGET_MERCHANT_ID, CURRENT_TARGET_TOB_UID
+    global CURRENT_OCCURRENCE_INDEX, CURRENT_TARGET_MERCHANT_ID, CURRENT_TARGET_TOB_UID, CURRENT_ACTIVE_ACCOUNT
     CURRENT_OCCURRENCE_INDEX = occurrence_index
     CURRENT_TARGET_MERCHANT_ID = target_merchant_id
     CURRENT_TARGET_TOB_UID = target_tob_uid
 
     if headless is None:
         headless = HEADLESS_DEFAULT
+    if not headless and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+        headless = True
 
-    browser.set_session_file(SESSION_FILE)
-
-    username = DEFAULT_USERNAME
-    password = DEFAULT_PASSWORD
-    if CREDS_FILE.exists():
-        try:
-            creds = json.loads(CREDS_FILE.read_text())
-            username = creds.get("username") or creds.get("shopee_username") or username
-            password = creds.get("password") or creds.get("shopee_password") or password
-        except Exception:
-            pass
+    if custom_username:
+        CURRENT_ACTIVE_ACCOUNT = custom_username
+        username = custom_username
+        password = custom_password or ""
+        session_file = SCRIPT_DIR / "data" / f"session_{custom_username}.json"
+        browser.set_session_file(session_file)
+        active_prof_dir = SCRIPT_DIR / "data" / f"chrome_profile_{custom_username}"
+    else:
+        CURRENT_ACTIVE_ACCOUNT = "allvbadmin"
+        browser.set_session_file(SESSION_FILE)
+        username = DEFAULT_USERNAME
+        password = DEFAULT_PASSWORD
+        if CREDS_FILE.exists():
+            try:
+                creds = json.loads(CREDS_FILE.read_text())
+                username = creds.get("username") or creds.get("shopee_username") or username
+                password = creds.get("password") or creds.get("shopee_password") or password
+            except Exception:
+                pass
+        active_prof_dir = CHROME_PROFILE_DIR
 
     # Clean up stale Singleton locks in Chrome profile before launching browser
-    for lk_dir in [CHROME_PROFILE_DIR, CHROME_PROFILE_DIR / "profile_allvbadmin"]:
+    for lk_dir in [active_prof_dir, active_prof_dir / f"profile_{CURRENT_ACTIVE_ACCOUNT}"]:
         if lk_dir.exists():
             for lk in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
                 f = lk_dir / lk
@@ -927,7 +946,8 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, tar
                     except Exception:
                         pass
 
-    print(f"[*] Membuka browser (headless={headless}) dan memilih merchant: '{target_name}' (ID: {target_merchant_id or '-'}, staffTobUid: {target_tob_uid or '-'}, Occ: {occurrence_index})...")
+    acc_label = f" (Akun Staf: {custom_username})" if custom_username else " (Master: allvbadmin)"
+    print(f"[*] Membuka browser (headless={headless}){acc_label} dan memilih merchant: '{target_name}' (ID: {target_merchant_id or '-'}, staffTobUid: {target_tob_uid or '-'}, Occ: {occurrence_index})...")
     
     session_data = browser.get_session(
         username=username,
@@ -944,11 +964,23 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, tar
     driver = session_data["driver"]
 
     try:
-        # Sinkronisasi merchant list terkini dari sesi aktif
-        try:
-            sync_live_merchant_list(driver)
-        except Exception:
-            pass
+        # Sinkronisasi merchant list terkini dari sesi aktif (hanya akun master allvbadmin)
+        if not custom_username:
+            try:
+                live_list = sync_live_merchant_list(driver)
+                if live_list:
+                    clean_t = target_name.lower().rstrip("_").strip()
+                    if clean_t in MERCHANT_INFO_NAME_MAP:
+                        m_live = MERCHANT_INFO_NAME_MAP[clean_t]
+                        if not target_merchant_id:
+                            target_merchant_id = m_live.get("merchantId")
+                            CURRENT_TARGET_MERCHANT_ID = target_merchant_id
+                        if not target_tob_uid:
+                            target_tob_uid = m_live.get("staffTobUid")
+                            CURRENT_TARGET_TOB_UID = target_tob_uid
+                        print(f"  ✓ [LIVE SYNC] Memetakan target '{target_name}' ke live MID: {target_merchant_id}, staffTobUid: {target_tob_uid}")
+            except Exception as sync_err:
+                print(f"  ⚠️ Live sync notice: {sync_err}")
 
         # STRICT CHECK 1: Verifikasi nama merchant aktif di UI dashboard
         active_ui_name = ""
@@ -960,7 +992,7 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, tar
         t_clean = target_name.lower().rstrip("_").strip()
         ui_clean = active_ui_name.lower().rstrip("_").strip()
 
-        if active_ui_name and (t_clean not in ui_clean and ui_clean not in t_clean):
+        if not custom_username and active_ui_name and (t_clean not in ui_clean and ui_clean not in t_clean):
             raise RuntimeError(
                 f"🚨 [STRICT VALIDATION ERROR] Browser aktif di merchant '{active_ui_name}', "
                 f"TIDAK SESUAI dengan target '{target_name}'! "
@@ -992,7 +1024,7 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, tar
         uinfo = get_driver_user_info(driver)
         actual_id = str(uinfo.get("merchantId") or "") if uinfo else ""
 
-        if actual_id and target_merchant_id and actual_id != str(target_merchant_id):
+        if not custom_username and actual_id and target_merchant_id and actual_id != str(target_merchant_id):
             raise RuntimeError(
                 f"🚨 [STRICT VALIDATION ERROR] Merchant ID aktif di API adalah '{actual_id}', "
                 f"TIDAK SESUAI dengan target ID '{target_merchant_id}' ('{target_name}')! "
@@ -1200,6 +1232,8 @@ def run_pull(
     include_excluded: bool = False,
     output_path: Path | str = None,
     headless: bool = None,
+    custom_username: str = None,
+    custom_password: str = None,
 ) -> Path | None:
     """
     Main executor for pulling outlet information.
@@ -1207,6 +1241,8 @@ def run_pull(
     """
     if headless is None:
         headless = HEADLESS_DEFAULT
+    if not headless and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+        headless = True
     print("=" * 70)
     print("  SHOPEE OUTLET INFO PULLER")
     if not include_excluded:
@@ -1214,7 +1250,7 @@ def run_pull(
     print("=" * 70)
     print()
 
-    is_filtered_run = bool(target_merchants is not None or target_merchant_id is not None or target_merchant_name is not None)
+    is_filtered_run = bool(target_merchants is not None or target_merchant_id is not None or target_merchant_name is not None or custom_username is not None)
 
     # 1. Load existing results from Excel (only for full batch run without explicit filters)
     if is_filtered_run or no_resume:
@@ -1263,8 +1299,8 @@ def run_pull(
         merchants_to_process.append(m)
 
     # Fallback: Jika target spesifik diminta lewat argumen tetapi belum tercatat di merchant_list.json cache
-    if not merchants_to_process and (target_merchant_name or target_merchant_id):
-        fallback_name = target_merchant_name or str(target_merchant_id)
+    if not merchants_to_process and (target_merchant_name or target_merchant_id or custom_username):
+        fallback_name = target_merchant_name or custom_username or str(target_merchant_id)
         m_info = get_merchant_info(target_id=target_merchant_id, target_name=target_merchant_name)
         f_mid = target_merchant_id or (m_info.get("merchantId") if m_info else "")
         f_tob = m_info.get("staffTobUid") if m_info else None
@@ -1277,6 +1313,8 @@ def run_pull(
             "total_occurrences": 1,
             "staff_tob_uid": f_tob,
             "is_active": True,
+            "custom_username": custom_username,
+            "custom_password": custom_password,
         })
 
     print(f"\n[*] Total {len(merchants_to_process)} merchant yang akan diproses:")
@@ -1314,6 +1352,8 @@ def run_pull(
                 target_tob_uid=m.get("staff_tob_uid"),
                 occurrence_index=occ_idx,
                 headless=headless,
+                custom_username=m.get("custom_username") or custom_username,
+                custom_password=m.get("custom_password") or custom_password,
             )
         except Exception as e:
             print(f"  [!] Gagal auth untuk merchant '{merchant_name}': {e}")
@@ -1580,9 +1620,14 @@ def main():
     parser.add_argument("--output", "-o", type=str, default=None, help="Lokasi/nama file output excel")
     parser.add_argument("--gui", action="store_true", help="Tampilkan jendela browser GUI")
     parser.add_argument("--headless", action="store_true", default=HEADLESS_DEFAULT, help=f"Jalankan browser dalam mode headless (default: {HEADLESS_DEFAULT})")
+    parser.add_argument("--username", type=str, default=None, help="Username Shopee jika menggunakan akun mandiri/staf")
+    parser.add_argument("--password", type=str, default=None, help="Password Shopee jika menggunakan akun mandiri/staf")
     args = parser.parse_args()
 
     headless_mode = False if args.gui else args.headless
+    if not headless_mode and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+        print("ℹ️ [Shopee] Lingkungan Linux tanpa display grafis ($DISPLAY kosong). Memaksa mode headless=True.")
+        headless_mode = True
 
     run_pull(
         target_merchant_id=args.merchant_id,
@@ -1591,6 +1636,8 @@ def main():
         include_excluded=args.include_excluded,
         output_path=args.output,
         headless=headless_mode,
+        custom_username=args.username,
+        custom_password=args.password,
     )
 
 

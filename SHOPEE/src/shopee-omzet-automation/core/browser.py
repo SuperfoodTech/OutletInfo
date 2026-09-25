@@ -551,6 +551,10 @@ def _trigger_and_extract_tokens(driver) -> tuple:
 # ── Driver Initialization ──────────────────────────────────────────────────────
 
 def _init_driver(headless: bool):
+    if not headless and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+        log.info("ℹ️ [BROWSER] Linux headless environment terdeteksi ($DISPLAY tidak ada). Memaksa mode headless=True.")
+        headless = True
+
     options = Options()
     options.add_argument("--log-level=3")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -1327,9 +1331,19 @@ def return_to_selector(driver) -> bool:
 def get_session(username=None, password=None, phone=None, headless=None, close_browser=True, target_name=None, interactive=True) -> dict | None:
     if headless is None:
         headless = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+    if not headless and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+        headless = True
     for attempt in range(3):
         log.info(f"🌐 [BROWSER] Launching (headless={headless}, attempt={attempt+1}/3)...")
-        driver = _init_driver(headless=headless)
+        driver = None
+        try:
+            driver = _init_driver(headless=headless)
+        except Exception as drv_err:
+            log.error(f"❌ [BROWSER] Inisialisasi driver gagal pada attempt {attempt+1}: {drv_err}")
+            if attempt == 2:
+                raise drv_err
+            time.sleep(2)
+            continue
         wait = WebDriverWait(driver, 30)
         session_success = False
 

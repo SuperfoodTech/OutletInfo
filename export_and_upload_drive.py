@@ -760,6 +760,8 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             return scrape_status
         send_log(15, f"🚀 [GoFood] Memulai penarikan live untuk '{clean_owner}'...")
         headless_go = os.getenv("HEADLESS_GOFOOD", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+        if not headless_go and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+            headless_go = True
         cmd = [
             python_bin,
             "-u",
@@ -794,6 +796,8 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             return scrape_status
         send_log(40, f"🚀 [GrabFood] Memulai penarikan live untuk '{clean_owner}'...")
         headless_grab = os.getenv("HEADLESS_GRAB", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+        if not headless_grab and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+            headless_grab = True
         cmd = [
             python_bin,
             "-u",
@@ -829,7 +833,7 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
         try:
             v_df = load_vercel_data()
             o_shopee = v_df[(v_df["Nama Pemilik"].astype(str).str.strip().str.lower() == clean_owner.lower()) & (v_df["Aplikator"] == "ShopeeFood")]
-            merchant_names = []
+            merchant_targets = []
             if not o_shopee.empty:
                 known_shopee = get_known_shopee_merchants()
                 import re
@@ -890,16 +894,31 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                         if not any(st in chosen_val.lower() or chosen_val.lower() in st for st in shopee_targets if st):
                             continue
 
-                    if chosen_val not in merchant_names:
-                        merchant_names.append(chosen_val)
+                    staff_u = str(r.get("Username Akses Staff S") or "").strip()
+                    staff_p = str(r.get("Kata Sandi Akses Staff S") or "").strip()
+                    if staff_u.lower() in ("nan", "none", "-"):
+                        staff_u = ""
+                    if staff_p.lower() in ("nan", "none", "-"):
+                        staff_p = ""
+
+                    if not any(t["name"] == chosen_val for t in merchant_targets):
+                        merchant_targets.append({
+                            "name": chosen_val,
+                            "username": staff_u,
+                            "password": staff_p,
+                        })
             
-            if merchant_names:
+            if merchant_targets:
                 headless_shopee = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
-                for idx, merchant_name in enumerate(merchant_names, start=1):
+                if not headless_shopee and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+                    headless_shopee = True
+
+                for idx, t_info in enumerate(merchant_targets, start=1):
+                    merchant_name = t_info["name"]
                     if cancel_event and cancel_event.is_set():
                         send_log(100, "🛑 Penarikan ShopeeFood dibatalkan oleh pengguna.")
                         break
-                    send_log(70, f"[ShopeeFood] Menarik data toko [{idx}/{len(merchant_names)}] '{merchant_name}'...")
+                    send_log(70, f"[ShopeeFood] Menarik data toko [{idx}/{len(merchant_targets)}] '{merchant_name}'...")
                     cmd = [
                         python_bin,
                         "-u",
@@ -907,17 +926,20 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                         "--merchant-name", merchant_name,
                         "--headless" if headless_shopee else "--gui"
                     ]
+                    if t_info.get("username") and t_info.get("password"):
+                        cmd.extend(["--username", t_info["username"], "--password", t_info["password"]])
+
                     rc_sh = run_subprocess_stream(
                         cmd,
                         cwd=SHOPEE_DIR,
-                        keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai"),
+                        keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai", "Token", "SYNC", "auth"),
                         on_log=lambda m: send_log(74, f"[Shopee] {m}"),
                         timeout_sec=180,
                         cancel_event=cancel_event
                     )
                     scrape_status["shopee_merchants"][merchant_name] = rc_sh
                 scrape_status["shopee"] = 0 if all(c == 0 for c in scrape_status["shopee_merchants"].values()) else 1
-                send_log(76, f"✅ [ShopeeFood] Selesai memproses {len(merchant_names)} merchant.")
+                send_log(76, f"✅ [ShopeeFood] Selesai memproses {len(merchant_targets)} merchant.")
             else:
                 send_log(76, f"ℹ️ [ShopeeFood] Tidak ditemukan nama merchant Shopee untuk '{clean_owner}'.")
         except Exception as e:
