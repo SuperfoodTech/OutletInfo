@@ -1,14 +1,14 @@
 [Unit]
 Description=Outlet Info Weekly Batch Listing Sync (Scraping, Drive, Sheet SOT & Discord)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 
 [Service]
 Type=oneshot
 User=radi
 WorkingDirectory=/home/radi/project/outletinfo
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/radi/project/outletinfo/.venv/bin/python /home/radi/project/outletinfo/cronjobsot/weekly_batch_sync.py
+ExecStart=/usr/bin/docker compose -f /home/radi/project/outletinfo/docker-compose.yml run --rm weekly-sync
 
 # Limits and safety
 TimeoutStartSec=10800
