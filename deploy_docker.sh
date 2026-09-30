@@ -57,20 +57,20 @@ elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
     sudo chown -R 1000:1000 output_owners SHOPEE/data GRAB/sessions GOFOOD/session cronjobsot/reports cache 2>/dev/null || true
 fi
 
-# 4. Hentikan service systemd lama (jika aktif) untuk menghindari konflik bot
-if systemctl is-active --quiet outlet-info 2>/dev/null; then
-    echo ""
-    echo "[*] Mendeteksi service systemd 'outlet-info' lama yang masih aktif."
-    echo "[*] Menghentikan dan menonaktifkan service systemd lama..."
-    if [ "$EUID" -eq 0 ]; then
-        systemctl stop outlet-info || true
-        systemctl disable outlet-info || true
-    else
-        sudo systemctl stop outlet-info || true
-        sudo systemctl disable outlet-info || true
-    fi
-    echo "[✓] Service systemd lama berhasil dinonaktifkan."
+# 4. Hentikan service systemd lama & proses bot host yang mungkin masih berjalan
+echo ""
+echo "[*] Memeriksa dan menghentikan proses bot lama di host..."
+if [ "$EUID" -eq 0 ]; then
+    systemctl stop outlet-info 2>/dev/null || true
+    systemctl disable outlet-info 2>/dev/null || true
+    pkill -9 -f "discord_bot.py" 2>/dev/null || true
+else
+    sudo systemctl stop outlet-info 2>/dev/null || true
+    sudo systemctl disable outlet-info 2>/dev/null || true
+    sudo pkill -9 -f "discord_bot.py" 2>/dev/null || true
+    pkill -9 -f "discord_bot.py" 2>/dev/null || true
 fi
+echo "[✓] Lingkungan host bersih dari instance bot lama."
 
 # 5. Build image Docker
 echo ""

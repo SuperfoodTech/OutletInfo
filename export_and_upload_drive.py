@@ -672,6 +672,10 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_ev
                         p.kill()
                     except Exception:
                         pass
+                try:
+                    p.wait(timeout=2)
+                except Exception:
+                    pass
                 on_log("🛑 Proses dibatalkan oleh pengguna.")
                 try:
                     sel.unregister(p.stdout)
@@ -689,6 +693,10 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_ev
                         p.kill()
                     except Exception:
                         pass
+                try:
+                    p.wait(timeout=2)
+                except Exception:
+                    pass
                 on_log(f"⏱️ Melewati batas waktu ({timeout_sec}s). Melanjutkan ke tahap berikutnya...")
                 break
 
