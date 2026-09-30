@@ -1,0 +1,72 @@
+services:
+  bot:
+    build: .
+    container_name: outlet-info-bot
+    command: python discord_bot.py
+    restart: unless-stopped
+    network_mode: host
+    shm_size: '1gb'
+    mem_limit: 1800m
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HEADLESS=true
+      - HEADLESS_GOFOOD=true
+      - HEADLESS_GRAB=true
+      - HEADLESS_SHOPEE=true
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./SHOPEE/data:/app/SHOPEE/data
+      - ./SHOPEE/credentials.json:/app/SHOPEE/credentials.json
+      - ./GRAB/sessions:/app/GRAB/sessions
+      - ./GOFOOD/session:/app/GOFOOD/session
+      - ./output_owners:/app/output_owners
+      - ./cronjobsot/reports:/app/cronjobsot/reports
+      - ./cache:/app/cache
+
+  weekly-sync:
+    build: .
+    container_name: outlet-info-weekly-sync
+    command: python cronjobsot/weekly_batch_sync.py
+    restart: "no"
+    network_mode: host
+    shm_size: '1gb'
+    mem_limit: 1800m
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HEADLESS=true
+      - HEADLESS_GOFOOD=true
+      - HEADLESS_GRAB=true
+      - HEADLESS_SHOPEE=true
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./SHOPEE/data:/app/SHOPEE/data
+      - ./SHOPEE/credentials.json:/app/SHOPEE/credentials.json
+      - ./GRAB/sessions:/app/GRAB/sessions
+      - ./GOFOOD/session:/app/GOFOOD/session
+      - ./output_owners:/app/output_owners
+      - ./cronjobsot/reports:/app/cronjobsot/reports
+      - ./cache:/app/cache
+
+  cli:
+    build: .
+    container_name: outlet-info-cli
+    command: python cli.py
+    stdin_open: true
+    tty: true
+    network_mode: host
+    shm_size: '1gb'
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HEADLESS=true
+      - HEADLESS_GOFOOD=true
+      - HEADLESS_GRAB=true
+      - HEADLESS_SHOPEE=true
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./SHOPEE/data:/app/SHOPEE/data
+      - ./SHOPEE/credentials.json:/app/SHOPEE/credentials.json
+      - ./GRAB/sessions:/app/GRAB/sessions
+      - ./GOFOOD/session:/app/GOFOOD/session
+      - ./output_owners:/app/output_owners
+      - ./cronjobsot/reports:/app/cronjobsot/reports
+      - ./cache:/app/cache

@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+__pycache__
+*/**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.env.*
+output_owners/*.xlsx
+SHOPEE/data/chrome_profile*
+cronjobsot/reports/*.json
+cronjobsot/reports/*.xlsx
+council-*
+anti-slop
