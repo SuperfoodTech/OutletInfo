@@ -333,7 +333,10 @@ class GenerateButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        await self.parent_view.start_generation(interaction)
+        try:
+            await self.parent_view.start_generation(interaction)
+        except (discord.NotFound, discord.HTTPException) as e:
+            print(f"⚠️ [BTN /generate] Interaksi tombol kadaluwarsa ({e}).")
 
 
 class RefreshButton(discord.ui.Button):
@@ -347,9 +350,16 @@ class RefreshButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.NotFound, discord.HTTPException) as e:
+            print(f"⚠️ [BTN /refresh] Interaksi tombol kadaluwarsa ({e}).")
+            return
         await self.parent_view.async_reload_metadata(force_live=True)
-        await self.parent_view.update_panel(interaction, edit_response=True)
+        try:
+            await self.parent_view.update_panel(interaction, edit_response=True)
+        except (discord.NotFound, discord.HTTPException) as e:
+            print(f"⚠️ [BTN /refresh] Gagal update panel ({e}).")
 
 
 class CancelButton(discord.ui.Button):
@@ -364,7 +374,10 @@ class CancelButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.parent_view.user.id:
-            await interaction.response.send_message("❌ Anda tidak memiliki izin untuk membatalkan panel ini.", ephemeral=True)
+            try:
+                await interaction.response.send_message("❌ Anda tidak memiliki izin untuk membatalkan panel ini.", ephemeral=True)
+            except Exception:
+                pass
             return
 
         cancel_embed = discord.Embed(
@@ -374,7 +387,13 @@ class CancelButton(discord.ui.Button):
             timestamp=datetime.datetime.now()
         )
         self.parent_view.stop()
-        await interaction.response.edit_message(embed=cancel_embed, view=None)
+        try:
+            await interaction.response.edit_message(embed=cancel_embed, view=None)
+        except (discord.NotFound, discord.HTTPException):
+            try:
+                await interaction.followup.edit_message(message_id=interaction.message.id, embed=cancel_embed, view=None)
+            except Exception:
+                pass
 
 
 class RunningProcessView(discord.ui.View):
@@ -387,13 +406,19 @@ class RunningProcessView(discord.ui.View):
     @discord.ui.button(label="Batalkan Proses", style=discord.ButtonStyle.danger, emoji="🛑", custom_id="btn_cancel_running_process")
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user.id:
-            await interaction.response.send_message("❌ Hanya pengguna yang memulai proses yang dapat membatalkannya.", ephemeral=True)
+            try:
+                await interaction.response.send_message("❌ Hanya pengguna yang memulai proses yang dapat membatalkannya.", ephemeral=True)
+            except Exception:
+                pass
             return
 
         button.disabled = True
         button.label = "Sedang Membatalkan..."
         self.cancel_event.set()
-        await interaction.response.edit_message(view=self)
+        try:
+            await interaction.response.edit_message(view=self)
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 
 class PartialResultView(discord.ui.View):
@@ -754,13 +779,20 @@ class ControlPanelView(discord.ui.View):
 
     async def update_panel(self, interaction: discord.Interaction, edit_response=False):
         embed = self.build_embed()
-        if edit_response:
-            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
-        else:
-            await interaction.response.edit_message(embed=embed, view=self)
+        try:
+            if edit_response:
+                await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+            else:
+                await interaction.response.edit_message(embed=embed, view=self)
+        except (discord.NotFound, discord.HTTPException) as e:
+            print(f"⚠️ [PANEL] Gagal update panel ({e}).")
 
     async def start_generation(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.NotFound, discord.HTTPException) as e:
+            print(f"⚠️ [START GENERATION] Interaksi tidak dapat di-defer ({e}).")
+            return
 
         # 🛡️ JobLock Guard: Periksa apakah pipeline sedang aktif memproses tugas lain
         if is_pipeline_locked():
@@ -1121,15 +1153,41 @@ class OutletInfoBot(commands.Bot):
 bot = OutletInfoBot()
 
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Menangani error interaksi slash command secara anggun."""
+    if isinstance(error, app_commands.CommandInvokeError):
+        original = error.original
+        # 10062: Unknown interaction (token kadaluwarsa karena latensi jaringan / bentrok multi-instance)
+        if isinstance(original, discord.NotFound) and getattr(original, "code", None) == 10062:
+            cmd_name = interaction.command.name if interaction.command else "command"
+            print(f"⚠️ [DISCORD] Interaksi '{cmd_name}' kadaluwarsa (10062: Unknown interaction).")
+            return
+        # 40060: Interaction has already been acknowledged
+        if isinstance(original, discord.HTTPException) and getattr(original, "code", None) == 40060:
+            cmd_name = interaction.command.name if interaction.command else "command"
+            print(f"⚠️ [DISCORD] Interaksi '{cmd_name}' sudah direspons (40060: Already acknowledged).")
+            return
+    print(f"⚠️ [APP COMMAND ERROR] {error}")
+
+
 @bot.tree.command(name="generate", description="🚀 Buka Control Panel untuk Generate & Upload Outlet Info ke Google Drive")
 @app_commands.describe(owner="Nama Owner (opsional: ketik untuk mencari nama owner dari Vercel Sheet)")
 async def generate_slash(interaction: discord.Interaction, owner: str = None):
     """Menampilkan Control Panel Interaktif."""
-    await interaction.response.defer()
+    try:
+        await interaction.response.defer()
+    except (discord.NotFound, discord.HTTPException) as e:
+        print(f"⚠️ [SLASH /generate] Interaksi tidak dapat di-defer ({e}).")
+        return
+
     owners_meta = await get_cached_owners_metadata(force_live=False)
     view = ControlPanelView(interaction.user, initial_owner=owner, owners_meta=owners_meta)
     embed = view.build_embed()
-    await interaction.followup.send(embed=embed, view=view)
+    try:
+        await interaction.followup.send(embed=embed, view=view)
+    except (discord.NotFound, discord.HTTPException) as e:
+        print(f"⚠️ [SLASH /generate] Gagal mengirim panel followup ({e}).")
 
 
 @generate_slash.autocomplete("owner")
@@ -1165,7 +1223,12 @@ async def generate_owner_autocomplete(interaction: discord.Interaction, current:
 @bot.tree.command(name="status", description="📊 Cek status data master GoFood, Grab & Shopee saat ini")
 async def status_slash(interaction: discord.Interaction):
     """Menampilkan status ringkas data outlet saat ini."""
-    await interaction.response.defer()
+    try:
+        await interaction.response.defer()
+    except (discord.NotFound, discord.HTTPException) as e:
+        print(f"⚠️ [SLASH /status] Interaksi tidak dapat di-defer ({e}).")
+        return
+
     owners = await get_cached_owners_metadata(force_live=False)
     total_owners = len(owners)
     total_outlets = sum(o["total"] for o in owners)
@@ -1203,7 +1266,10 @@ async def status_slash(interaction: discord.Interaction):
     embed.add_field(name="📁 Root Google Drive", value=f"[Buka Google Drive]({ROOT_DRIVE_URL})", inline=False)
     
     embed.set_footer(text="Gunakan /generate untuk mengekspor data.")
-    await interaction.followup.send(embed=embed)
+    try:
+        await interaction.followup.send(embed=embed)
+    except (discord.NotFound, discord.HTTPException) as e:
+        print(f"⚠️ [SLASH /status] Gagal mengirim status followup ({e}).")
 
 
 def main():
