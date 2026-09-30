@@ -49,6 +49,14 @@ mkdir -p output_owners \
          cronjobsot/reports \
          cache
 
+# Setel permission agar user non-root (UID 1000) di container memiliki akses tulis
+chmod -R 775 output_owners SHOPEE/data GRAB/sessions GOFOOD/session cronjobsot/reports cache 2>/dev/null || true
+if [ "$EUID" -eq 0 ]; then
+    chown -R 1000:1000 output_owners SHOPEE/data GRAB/sessions GOFOOD/session cronjobsot/reports cache 2>/dev/null || true
+elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+    sudo chown -R 1000:1000 output_owners SHOPEE/data GRAB/sessions GOFOOD/session cronjobsot/reports cache 2>/dev/null || true
+fi
+
 # 4. Hentikan service systemd lama (jika aktif) untuk menghindari konflik bot
 if systemctl is-active --quiet outlet-info 2>/dev/null; then
     echo ""

@@ -14,6 +14,7 @@ Fitur:
 
 import os
 import sys
+import time
 import asyncio
 import datetime
 import threading
@@ -40,6 +41,33 @@ except ImportError:
     sys.path.append(str(BASE_DIR))
     from export_and_upload_drive import get_owners_with_metadata, generate_for_owner_pipeline
     from pipeline_lock import is_pipeline_locked, get_lock_info
+
+# Cache in-memory metadata owner Vercel Sheet
+_metadata_cache = {
+    "owners": [],
+    "timestamp": 0.0
+}
+_metadata_lock = asyncio.Lock()
+
+
+async def get_cached_owners_metadata(force_live: bool = False, max_age: float = 120.0):
+    """Mengambil metadata owner secara asinkron dengan caching memori agar tidak memblokir event loop."""
+    now = time.time()
+    if not force_live and _metadata_cache["owners"] and (now - _metadata_cache["timestamp"] < max_age):
+        return _metadata_cache["owners"]
+
+    async with _metadata_lock:
+        now = time.time()
+        if not force_live and _metadata_cache["owners"] and (now - _metadata_cache["timestamp"] < max_age):
+            return _metadata_cache["owners"]
+
+        data = await asyncio.to_thread(get_owners_with_metadata, source="vercel", force_live=force_live)
+        if data:
+            _metadata_cache["owners"] = data
+            _metadata_cache["timestamp"] = now
+        elif not _metadata_cache["owners"]:
+            _metadata_cache["owners"] = data
+        return _metadata_cache["owners"]
 
 
 # ─── Visual Helpers & Themes ──────────────────────────────────────────────────
@@ -320,7 +348,7 @@ class RefreshButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        self.parent_view.reload_metadata(force_live=True)
+        await self.parent_view.async_reload_metadata(force_live=True)
         await self.parent_view.update_panel(interaction, edit_response=True)
 
 
@@ -579,15 +607,18 @@ class PartialResultView(discord.ui.View):
 
 
 class ControlPanelView(discord.ui.View):
-    def __init__(self, user, initial_owner=None):
+    def __init__(self, user, initial_owner=None, owners_meta=None):
         super().__init__(timeout=600)
         self.user = user
         self.selected_aplikator = "all"
         self.selected_owner = initial_owner
-        self.owners_meta = []
+        self.owners_meta = owners_meta if owners_meta is not None else []
         self.current_page = 0
         self.total_pages = 1
-        self.reload_metadata(force_live=True)
+        if not self.owners_meta:
+            self.reload_metadata(force_live=False)
+        else:
+            self.apply_metadata(self.owners_meta)
 
     def rebuild_components(self):
         self.clear_items()
@@ -613,8 +644,8 @@ class ControlPanelView(discord.ui.View):
             self.add_item(self.prev_btn)
             self.add_item(self.next_btn)
 
-    def reload_metadata(self, force_live=False):
-        self.owners_meta = get_owners_with_metadata(source="vercel", force_live=force_live)
+    def apply_metadata(self, data):
+        self.owners_meta = data or []
         self.total_pages = max(1, (len(self.owners_meta) + PAGE_SIZE - 1) // PAGE_SIZE)
 
         # Jika ada owner yang ditentukan, lompat ke halaman yang memuat owner tersebut
@@ -633,6 +664,14 @@ class ControlPanelView(discord.ui.View):
 
         self.current_page = max(0, min(self.current_page, self.total_pages - 1))
         self.rebuild_components()
+
+    def reload_metadata(self, force_live=False):
+        data = get_owners_with_metadata(source="vercel", force_live=force_live)
+        self.apply_metadata(data)
+
+    async def async_reload_metadata(self, force_live=False):
+        data = await get_cached_owners_metadata(force_live=force_live)
+        self.apply_metadata(data)
 
     def build_embed(self):
         embed = discord.Embed(
@@ -1067,7 +1106,8 @@ class OutletInfoBot(commands.Bot):
             try:
                 target_channel = self.get_channel(int(CHANNEL_ID))
                 if target_channel:
-                    view = ControlPanelView(self.user)
+                    owners_meta = await get_cached_owners_metadata(force_live=False)
+                    view = ControlPanelView(self.user, owners_meta=owners_meta)
                     embed = view.build_embed()
                     embed.title = "🟢 BOT ONLINE • CONTROL PANEL"
                     await target_channel.send(embed=embed, view=view)
@@ -1085,14 +1125,21 @@ bot = OutletInfoBot()
 @app_commands.describe(owner="Nama Owner (opsional: ketik untuk mencari nama owner dari Vercel Sheet)")
 async def generate_slash(interaction: discord.Interaction, owner: str = None):
     """Menampilkan Control Panel Interaktif."""
-    view = ControlPanelView(interaction.user, initial_owner=owner)
+    await interaction.response.defer()
+    owners_meta = await get_cached_owners_metadata(force_live=False)
+    view = ControlPanelView(interaction.user, initial_owner=owner, owners_meta=owners_meta)
     embed = view.build_embed()
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.followup.send(embed=embed, view=view)
 
 
 @generate_slash.autocomplete("owner")
 async def generate_owner_autocomplete(interaction: discord.Interaction, current: str):
-    owners = get_owners_with_metadata(source="vercel", force_live=True)
+    owners = _metadata_cache["owners"]
+    if not owners:
+        try:
+            owners = await get_cached_owners_metadata(force_live=False)
+        except Exception:
+            owners = []
     choices = []
     current_lower = (current or "").strip().lower()
 
@@ -1118,7 +1165,8 @@ async def generate_owner_autocomplete(interaction: discord.Interaction, current:
 @bot.tree.command(name="status", description="📊 Cek status data master GoFood, Grab & Shopee saat ini")
 async def status_slash(interaction: discord.Interaction):
     """Menampilkan status ringkas data outlet saat ini."""
-    owners = get_owners_with_metadata()
+    await interaction.response.defer()
+    owners = await get_cached_owners_metadata(force_live=False)
     total_owners = len(owners)
     total_outlets = sum(o["total"] for o in owners)
     total_go = sum(o["gofood"] for o in owners)
@@ -1155,7 +1203,7 @@ async def status_slash(interaction: discord.Interaction):
     embed.add_field(name="📁 Root Google Drive", value=f"[Buka Google Drive]({ROOT_DRIVE_URL})", inline=False)
     
     embed.set_footer(text="Gunakan /generate untuk mengekspor data.")
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
 def main():
