@@ -558,7 +558,7 @@ async def fetch_group_details(page, idmg):
 
 
 async def fetch_merchant_list(page):
-    """Fetch list of all merchant stores using the search API with pagination."""
+    """Fetch list of all merchant stores using the search API with robust pagination."""
     stores = []
     total_expected = 0
     logger.info("Fetching merchant store list...")
@@ -568,63 +568,82 @@ async def fetch_merchant_list(page):
         limit = 100
         
         while True:
-            api_url = f"https://api.grab.com/delvplatformapi/merchant/v1/merchant-group/store/search?offset={offset}&limit={limit}&search=&includeItemsWithoutPhotosCount=true&includeInactive=true&modelType=ALL&asc=true&cityIDs[]=ALL&includeMenuGroupV2ID=false"
+            api_url = f"https://api.grab.com/delvplatformapi/merchant/v1/merchant-group/store/search?offset={offset}&limit={limit}&search=&includeItemsWithoutPhotosCount=true&includeInactive=true&modelType=ALL&orderBy=name&asc=true&cityIDs[]=ALL&includeMenuGroupV2ID=false"
             
-            page_retries = 3
+            page_retries = 5
             fetched_stores = []
+            has_more = None
             
             for attempt in range(page_retries):
-                logger.info(f"Fetching stores offset {offset} (attempt {attempt+1})...")
-                response = await page.request.get(api_url, headers=auth_headers)
-                if not response.ok:
-                    logger.warning(f"Gagal mengambil store list pada offset {offset}: HTTP {response.status}")
-                    await asyncio.sleep(1.5)
-                    continue
+                logger.info(f"Fetching stores offset {offset} (attempt {attempt+1}/{page_retries})...")
+                try:
+                    response = await page.request.get(api_url, headers=auth_headers)
+                    if response.status == 429 or response.status >= 500:
+                        wait_time = (attempt + 1) * 3
+                        logger.warning(f"⚠️ API Grab sibuk (HTTP {response.status}) pada offset {offset}. Menunggu {wait_time}s sebelum retry...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    if not response.ok:
+                        logger.warning(f"Gagal mengambil store list pada offset {offset}: HTTP {response.status}")
+                        await asyncio.sleep(2.0)
+                        continue
+                        
+                    data = await response.json()
+                    has_more = data.get("hasMore")
                     
-                data = await response.json()
-                
-                # Ambil totalCount dari response API pada halaman pertama
-                if offset == 0:
-                    total_expected = (
-                        data.get("totalCount") or
-                        data.get("total") or
-                        data.get("data", {}).get("totalCount") or
-                        0
+                    # Ambil totalCount dari response API pada halaman pertama jika tersedia
+                    if offset == 0:
+                        total_expected = (
+                            data.get("totalCount") or
+                            data.get("total") or
+                            data.get("data", {}).get("totalCount") or
+                            0
+                        )
+                        if total_expected:
+                            logger.info(f"Target total merchant dari sistem Grab untuk portal ini: {total_expected}")
+                    
+                    fetched_stores = (
+                        data.get("merchants") or
+                        data.get("stores") or
+                        data.get("data", {}).get("stores") or
+                        data.get("merchantDetails") or
+                        data.get("data", {}).get("merchantDetails") or
+                        data.get("catalogStores") or
+                        []
                     )
-                    logger.info(f"Target total merchant dari sistem Grab untuk portal ini: {total_expected}")
-                
-                fetched_stores = (
-                    data.get("stores") or
-                    data.get("data", {}).get("stores") or
-                    data.get("merchantDetails") or
-                    data.get("data", {}).get("merchantDetails") or
-                    data.get("catalogStores") or
-                    []
-                )
-                
-                # fallback pemetaan jika array stores ada di letak berbeda
-                if not fetched_stores and isinstance(data, list):
-                    fetched_stores = data
-                elif not fetched_stores and isinstance(data, dict):
-                    for k, v in data.items():
-                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and ("merchantID" in v[0] or "merchantId" in v[0] or "id" in v[0]):
-                            fetched_stores = v
-                            break
-                            
-                break
+                    
+                    # fallback pemetaan jika array stores ada di letak berbeda
+                    if not fetched_stores and isinstance(data, list):
+                        fetched_stores = data
+                    elif not fetched_stores and isinstance(data, dict):
+                        for k, v in data.items():
+                            if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and ("merchantID" in v[0] or "merchantId" in v[0] or "id" in v[0]):
+                                fetched_stores = v
+                                break
+                    break
+                except Exception as ex:
+                    wait_time = (attempt + 1) * 2
+                    logger.warning(f"⚠️ Error request offset {offset}: {ex}. Menunggu {wait_time}s...")
+                    await asyncio.sleep(wait_time)
             
-            if not fetched_stores or not isinstance(fetched_stores, list):
+            if not fetched_stores and has_more is not True:
+                break
+                
+            if not fetched_stores and attempt == page_retries - 1:
+                logger.error(f"❌ Gagal mengambil outlet pada offset {offset} setelah {page_retries} percobaan!")
                 break
                 
             stores.extend(fetched_stores)
-            logger.info(f"Berhasil mengambil {len(fetched_stores)} outlet. Total terkumpul: {len(stores)}")
+            logger.info(f"   ↳ Berhasil mengambil {len(fetched_stores)} outlet pada offset {offset}. Total terkumpul: {len(stores)} (hasMore: {has_more})")
             
-            # Jika jumlah data yang didapat kurang dari limit (misal 1, 3, 18), berarti semua sudah terambil dalam 1 request!
-            if len(fetched_stores) < limit:
+            # Jangan break jika has_more masih True
+            if has_more is False:
+                break
+            if has_more is None and len(fetched_stores) < limit:
                 break
                 
             offset += limit
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
 
     except Exception as e:
         logger.error(f"Error fetching merchant list: {e}")
@@ -678,36 +697,63 @@ async def fetch_merchant_list_fast(headers, cookies_dict, cred, max_retries=3):
         limit = 100
         
         while True:
-            api_url = f"https://api.grab.com/delvplatformapi/merchant/v1/merchant-group/store/search?offset={offset}&limit={limit}&search=&includeItemsWithoutPhotosCount=true&includeInactive=true&modelType=ALL&asc=true&cityIDs[]=ALL&includeMenuGroupV2ID=false"
-            page_retries = 3
+            api_url = f"https://api.grab.com/delvplatformapi/merchant/v1/merchant-group/store/search?offset={offset}&limit={limit}&search=&includeItemsWithoutPhotosCount=true&includeInactive=true&modelType=ALL&orderBy=name&asc=true&cityIDs[]=ALL&includeMenuGroupV2ID=false"
+            page_retries = 5
             fetched_stores = []
+            has_more = None
             
             for attempt in range(page_retries):
-                res_list = await s.get(api_url, headers=headers)
-                if not res_list.ok:
-                    import asyncio
-                    await asyncio.sleep(1.5)
-                    continue
-                data = res_list.json()
-                fetched_stores = data.get("stores") or data.get("data", {}).get("stores") or data.get("merchantDetails") or data.get("data", {}).get("merchantDetails") or data.get("catalogStores") or []
-                if not fetched_stores and isinstance(data, list):
-                    fetched_stores = data
-                elif not fetched_stores and isinstance(data, dict):
-                    for k, v in data.items():
-                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and ("merchantID" in v[0] or "merchantId" in v[0] or "id" in v[0]):
-                            fetched_stores = v
-                            break
+                try:
+                    res_list = await s.get(api_url, headers=headers, timeout=20)
+                    if res_list.status_code == 429 or res_list.status_code >= 500:
+                        wait_time = (attempt + 1) * 3
+                        logger.warning(f"⚠️ [FAST PATH] API Grab sibuk (HTTP {res_list.status_code}) pada offset {offset}. Menunggu {wait_time}s...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    if not res_list.ok:
+                        await asyncio.sleep(2.0)
+                        continue
+                    data = res_list.json()
+                    has_more = data.get("hasMore")
+                    fetched_stores = (
+                        data.get("merchants") or
+                        data.get("stores") or
+                        data.get("data", {}).get("stores") or
+                        data.get("merchantDetails") or
+                        data.get("data", {}).get("merchantDetails") or
+                        data.get("catalogStores") or
+                        []
+                    )
+                    if not fetched_stores and isinstance(data, list):
+                        fetched_stores = data
+                    elif not fetched_stores and isinstance(data, dict):
+                        for k, v in data.items():
+                            if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and ("merchantID" in v[0] or "merchantId" in v[0] or "id" in v[0]):
+                                fetched_stores = v
+                                break
+                    break
+                except Exception as ex:
+                    wait_time = (attempt + 1) * 2
+                    logger.warning(f"⚠️ [FAST PATH] Error request offset {offset}: {ex}. Menunggu {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                
+            if not fetched_stores and has_more is not True:
                 break
                 
-            if not fetched_stores or not isinstance(fetched_stores, list):
+            if not fetched_stores and attempt == page_retries - 1:
+                logger.error(f"❌ [FAST PATH] Gagal mengambil outlet pada offset {offset} setelah {page_retries} percobaan!")
                 break
                 
             stores.extend(fetched_stores)
-            if len(fetched_stores) < limit:
+            logger.info(f"   ↳ [FAST PATH] Offset {offset}: dapat {len(fetched_stores)} outlet (Total sementara: {len(stores)}, hasMore: {has_more})")
+            
+            if has_more is False:
                 break
+            if has_more is None and len(fetched_stores) < limit:
+                break
+                
             offset += limit
-            import asyncio
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2.5)
 
         if not stores:
             # Cari Entity ID GF jika stores kosong
@@ -742,8 +788,17 @@ async def fetch_merchant_list_fast(headers, cookies_dict, cred, max_retries=3):
             }]
             
         all_results = []
+        seen_merchant_ids = set()
+        duplicate_api_count = 0
         for store in stores:
             merchant_id = str(store.get("merchantID") or store.get("merchantId") or store.get("id") or "").strip()
+            if not merchant_id:
+                continue
+            if merchant_id in seen_merchant_ids:
+                duplicate_api_count += 1
+                continue
+            seen_merchant_ids.add(merchant_id)
+
             store_name = store.get("name") or store.get("merchantName") or store.get("storeName") or merchant_id
             status = store.get("status") or store.get("isActive") or ""
             alamat = store.get("address") or store.get("merchantAddress") or ""
@@ -763,9 +818,6 @@ async def fetch_merchant_list_fast(headers, cookies_dict, cred, max_retries=3):
             if not nama_pemilik: nama_pemilik = group_acc_name
             if not no_rekening: no_rekening = group_acc_no
 
-            if not merchant_id:
-                continue
-
             link_menu = format_grab_food_link(merchant_id)
             all_results.append({
                 "Nama Pemilik": cred.get("owner", ""),
@@ -784,7 +836,10 @@ async def fetch_merchant_list_fast(headers, cookies_dict, cred, max_retries=3):
                 "_owner": cred.get("owner", cred["name"])
             })
             
-        logger.info(f"⚡ [FAST PATH] Berhasil mengekstrak {len(all_results)} outlet via curl_cffi!")
+        if duplicate_api_count > 0:
+            logger.info(f"⚡ [FAST PATH] Berhasil mengekstrak {len(all_results)} outlet unik via curl_cffi ({duplicate_api_count} data duplikat batas API dibersihkan)!")
+        else:
+            logger.info(f"⚡ [FAST PATH] Berhasil mengekstrak {len(all_results)} outlet unik via curl_cffi!")
         return all_results
 
 async def run_scraper_for_credential(playwright, cred, force_fresh=False, headless=None):
@@ -869,7 +924,10 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
         logger.info("Mengecek validitas session...")
         try:
             await page.goto(f"{BASE_URL}/food/menu", wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(2000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=6000)
+            except Exception:
+                await page.wait_for_timeout(4000)
         except Exception as e:
             logger.warning(f"Navigasi menu awal lambat ({e}), melanjutkan...")
 
@@ -895,11 +953,20 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
             # Pindah lagi ke halaman menu setelah login berhasil
             try:
                 await page.goto(f"{BASE_URL}/food/menu", wait_until="domcontentloaded", timeout=45000)
-                await page.wait_for_timeout(2000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=6000)
+                except Exception:
+                    await page.wait_for_timeout(4000)
             except Exception as e:
                 logger.warning(f"Navigasi menu pasca login lambat ({e}), melanjutkan...")
         else:
             logger.info("[✓] Session masih valid! Lewati proses login.")
+
+        # Tunggu hingga auth_headers terisi jika belum lengkap
+        auth_wait_retries = 0
+        while not auth_headers.get("authorization") and auth_wait_retries < 4:
+            auth_wait_retries += 1
+            await page.wait_for_timeout(1000)
 
         # Get IDMG (Group ID) from merchant-selector API
         idmg, idmg_status = await fetch_idmg(page)
@@ -926,7 +993,10 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
             # Pindah lagi ke halaman menu setelah login berhasil
             try:
                 await page.goto(f"{BASE_URL}/food/menu", wait_until="domcontentloaded", timeout=45000)
-                await page.wait_for_timeout(2000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=6000)
+                except Exception:
+                    await page.wait_for_timeout(4000)
             except Exception as e:
                 logger.warning(f"Navigasi menu pasca login ulang lambat ({e}), melanjutkan...")
             
