@@ -110,6 +110,28 @@ def get_available_platforms_for_owner(owner_name, owners_meta):
     return ["gofood", "grab", "shopee"]
 
 
+def format_detector_warnings_field(embed: discord.Embed, warnings: list):
+    """Menambahkan field peringatan detektor ke dalam Discord Embed jika ditemukan kegagalan platform."""
+    if not warnings:
+        return
+    warn_lines = []
+    for w in warnings[:6]:
+        w_p = str(w.get("platform", "")).lower()
+        plat_icon = "🔴" if "go" in w_p else ("🟢" if "grab" in w_p else "🟠")
+        tipe_str = "Gagal Login" if w.get("tipe") == "GAGAL_LOGIN" else "Data Kosong"
+        portal_lbl = w.get("portal", "-")
+        pesan_lbl = w.get("pesan", "-")
+        warn_lines.append(f"{plat_icon} **{w.get('platform')}** [{tipe_str}]: `{portal_lbl}`\n└ *{pesan_lbl}*")
+    if len(warnings) > 6:
+        warn_lines.append(f"... dan {len(warnings) - 6} peringatan lainnya.")
+
+    embed.add_field(
+        name="🚨 Peringatan Detektor Platform",
+        value="\n".join(warn_lines),
+        inline=False
+    )
+
+
 def build_aplikator_options(available_platforms, current_selected="all"):
     """Menyusun opsi dropdown aplikator secara dinamis sesuai platform yang dimiliki owner."""
     options = []
@@ -571,6 +593,7 @@ class PartialResultView(discord.ui.View):
                 full_embed.add_field(name="📊 Total Outlet", value=f"**{res['total']} Outlet (100% Lengkap)**", inline=True)
                 full_embed.add_field(name="📄 File Excel", value=f"`{res['filename']}`\n`✓ Diperbarui di Google Drive`", inline=False)
                 full_embed.add_field(name="📁 Link Folder Google Drive", value=f"[👉 Buka Folder `{res['owner']}` di Google Drive]({new_folder_url})", inline=False)
+                format_detector_warnings_field(full_embed, res.get("detector_warnings", []))
                 full_embed.set_footer(text="Superfood Tech • Multi-Platform Engine", icon_url=DRIVE_ICON_URL)
 
                 class FullResultView(discord.ui.View):
@@ -607,6 +630,7 @@ class PartialResultView(discord.ui.View):
 
                 still_partial_embed.add_field(name="⚠️ Outlet yang Belum Lengkap", value="\n".join(missing_lines) if missing_lines else "-", inline=False)
                 still_partial_embed.add_field(name="📁 Link Folder Google Drive", value=f"[👉 Buka Folder `{res['owner']}` di Google Drive]({new_folder_url})", inline=False)
+                format_detector_warnings_field(still_partial_embed, res.get("detector_warnings", []))
                 still_partial_embed.set_footer(text="Superfood Tech • Batas maksimal retry adalah 2 kali", icon_url=DRIVE_ICON_URL)
 
                 new_view = PartialResultView(
@@ -964,7 +988,7 @@ class ControlPanelView(discord.ui.View):
                 success_embed.add_field(name="📊 Total Outlet", value=f"**{result['total']} Outlet**", inline=True)
                 success_embed.add_field(name="📄 File Excel", value=f"`{result['filename']}`\n`✓ 2 Tab (Listing & Listing 2)`", inline=False)
                 success_embed.add_field(name="📁 Link Folder Google Drive", value=f"[👉 Buka Folder `{result['owner']}` di Google Drive]({folder_url})", inline=False)
-                
+                format_detector_warnings_field(success_embed, result.get("detector_warnings", []))
                 success_embed.set_footer(text="Superfood Tech • Multi-Platform Engine", icon_url=DRIVE_ICON_URL)
 
                 # Buat Link Buttons
@@ -1041,6 +1065,7 @@ class ControlPanelView(discord.ui.View):
                     value=f"[👉 Buka Folder `{result['owner']}` di Google Drive]({folder_url})",
                     inline=False
                 )
+                format_detector_warnings_field(partial_embed, result.get("detector_warnings", []))
                 partial_embed.set_footer(text="Superfood Tech • Klik 'Coba Tarik Ulang' untuk memproses yang gagal", icon_url=DRIVE_ICON_URL)
 
                 part_view = PartialResultView(

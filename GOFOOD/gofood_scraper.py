@@ -1447,8 +1447,15 @@ def main():
         postponed_portals = []
         is_retry_round = False
         
-        # Kolektor outlet yang dikelompokkan per Owner
+        # Kolektor outlet yang dikelompokkan per Owner & Detektor Alerts
         owner_outlets_collected = {}
+        detector_alerts = []
+        detector_alerts_file = CACHE_DIR / "gofood_detector_alerts.json"
+        if detector_alerts_file.exists():
+            try:
+                os.remove(detector_alerts_file)
+            except Exception:
+                pass
 
         while queue:
             target = queue.pop(0)
@@ -1857,8 +1864,26 @@ def main():
                         owner_outlets_collected[owner_name_str].extend(outlets_data)
                 else:
                     print("   ⚠️ Tidak ada data outlet yang ditemukan.")
+                    alert_item = {
+                        "platform": "GoFood",
+                        "portal": portal_name_str,
+                        "email": logged_in_email or target.get('email', ''),
+                        "tipe": "DATA_KOSONG",
+                        "pesan": f"Login berhasil namun data outlet GoBiz kosong (0 outlet)"
+                    }
+                    detector_alerts.append(alert_item)
+                    print(f"🚨 [PERINGATAN DETEKTOR] [GoFood] DATA KOSONG pada portal '{portal_name_str}' (0 outlet ditemukan)!")
             else:
                 print(f"❌ Gagal login ke portal {portal_name_str}.")
+                alert_item = {
+                    "platform": "GoFood",
+                    "portal": portal_name_str,
+                    "email": ", ".join(emails_to_try),
+                    "tipe": "GAGAL_LOGIN",
+                    "pesan": f"Gagal login untuk email: {', '.join(emails_to_try)} (OTP timeout / password salah / terblokir)"
+                }
+                detector_alerts.append(alert_item)
+                print(f"🚨 [PERINGATAN DETEKTOR] [GoFood] GAGAL LOGIN pada portal '{portal_name_str}' ({', '.join(emails_to_try)})!")
                 if target not in postponed_portals:
                     postponed_portals.append(target)
 
@@ -1869,6 +1894,20 @@ def main():
 
         print("\n✅ Semua portal yang dipilih telah selesai diproses.")
         browser.close()
+
+        # Simpan file hasil deteksi peringatan ke cache JSON
+        try:
+            with open(detector_alerts_file, "w", encoding="utf-8") as f:
+                json.dump(detector_alerts, f, indent=2, ensure_ascii=False)
+        except Exception as ex:
+            pass
+
+        if detector_alerts:
+            print("\n" + "!" * 70)
+            print(f"  🚨 PERINGATAN DETEKTOR: Ditemukan {len(detector_alerts)} kegagalan pada platform GoFood:")
+            for al in detector_alerts:
+                print(f"  • [{al['tipe']}] Portal: '{al['portal']}' ({al.get('email', '-')}) - {al['pesan']}")
+            print("!" * 70 + "\n")
         
         # Simpan file per-Owner untuk semua outlet yang berhasil dikumpulkan
         if owner_outlets_collected:

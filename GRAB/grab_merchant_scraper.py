@@ -1518,10 +1518,17 @@ async def main():
     if source_type == "agency" and not os.path.exists(progress_file) and os.path.exists(os.path.join(SESSIONS_DIR, ".grab_progress.json")):
         progress_file = os.path.join(SESSIONS_DIR, ".grab_progress.json")
 
-    # ── Checkpoint / Resume Management ──────────────────────────────
+    # ── Checkpoint / Resume Management & Detector Alerts ─────────────
     completed_portal_names = set()
     completed_usernames = set()
     all_collected_stores = []
+    detector_alerts = []
+    detector_alerts_file = os.path.join(CACHE_DIR, "grab_detector_alerts.json")
+    if os.path.exists(detector_alerts_file):
+        try:
+            os.remove(detector_alerts_file)
+        except Exception:
+            pass
     
     if args.fresh and os.path.exists(progress_file):
         try:
@@ -1592,6 +1599,42 @@ async def main():
                             }, f, indent=2)
                     except Exception as ex:
                         logger.debug(f"Gagal menyimpan checkpoint progress: {ex}")
+                else:
+                    # Detektor: Berhasil login tetapi tidak ada outlet
+                    alert_item = {
+                        "platform": "GrabFood",
+                        "portal": cred["name"],
+                        "username": cred.get("username", "-"),
+                        "tipe": "DATA_KOSONG",
+                        "pesan": f"Login berhasil namun data outlet kosong (0 outlet ditemukan)"
+                    }
+                    detector_alerts.append(alert_item)
+                    logger.warning(f"🚨 [PERINGATAN DETEKTOR] [GrabFood] DATA KOSONG pada portal '{cred['name']}' (Akun: @{cred.get('username', '-')})!")
+            else:
+                # Detektor: Gagal login / otentikasi
+                alert_item = {
+                    "platform": "GrabFood",
+                    "portal": cred["name"],
+                    "username": cred.get("username", "-"),
+                    "tipe": "GAGAL_LOGIN",
+                    "pesan": f"Gagal login akun '@{cred.get('username', '-')}' (kredensial salah / auth expired)"
+                }
+                detector_alerts.append(alert_item)
+                logger.warning(f"🚨 [PERINGATAN DETEKTOR] [GrabFood] GAGAL LOGIN pada portal '{cred['name']}' (Akun: @{cred.get('username', '-')})!")
+
+    # Simpan hasil deteksi peringatan ke file cache
+    try:
+        with open(detector_alerts_file, "w", encoding="utf-8") as f:
+            json.dump(detector_alerts, f, indent=2, ensure_ascii=False)
+    except Exception as ex:
+        logger.debug(f"Gagal menyimpan file detektor alerts: {ex}")
+
+    if detector_alerts:
+        logger.warning("\n" + "!" * 70)
+        logger.warning(f"  🚨 PERINGATAN DETEKTOR: Ditemukan {len(detector_alerts)} kegagalan pada platform GrabFood:")
+        for al in detector_alerts:
+            logger.warning(f"  • [{al['tipe']}] Portal: '{al['portal']}' (@{al['username']}) - {al['pesan']}")
+        logger.warning("!" * 70 + "\n")
 
     logger.info("\n[✓] Proses scraping selesai.")
 

@@ -1321,8 +1321,21 @@ def run_pull(
     for idx, m in enumerate(merchants_to_process, 1):
         print(f"    {idx}. {m['merchant_name']} (ID: {m['merchant_id']}, Occ: {m['occurrence_index']})")
 
+    detector_alerts = []
+    detector_alerts_file = OUTPUT_DIR / "shopee_detector_alerts.json"
+    if detector_alerts_file.exists():
+        try:
+            os.remove(detector_alerts_file)
+        except Exception:
+            pass
+
     if not merchants_to_process:
         print("\n[✓] Tidak ada merchant yang perlu ditarik (semua sudah ditarik atau tidak cocok filter).")
+        try:
+            with open(detector_alerts_file, "w", encoding="utf-8") as f:
+                json.dump([], f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
         return None
 
     merchant_counts = {}
@@ -1357,6 +1370,16 @@ def run_pull(
             )
         except Exception as e:
             print(f"  [!] Gagal auth untuk merchant '{merchant_name}': {e}")
+            alert_item = {
+                "platform": "ShopeeFood",
+                "portal": merchant_name,
+                "merchant_id": str(merchant_id or ""),
+                "username": m.get("custom_username") or custom_username or DEFAULT_USERNAME,
+                "tipe": "GAGAL_LOGIN",
+                "pesan": f"Gagal auth/switch ke merchant '{merchant_name}' (ID: {merchant_id}): {e}"
+            }
+            detector_alerts.append(alert_item)
+            print(f"🚨 [PERINGATAN DETEKTOR] [ShopeeFood] GAGAL LOGIN pada portal '{merchant_name}' (ID: {merchant_id})!")
             continue
 
         # Fetch all stores for this merchant
@@ -1370,6 +1393,16 @@ def run_pull(
 
         if not all_stores:
             print(f"  [!] Tidak ada store ditemukan untuk '{merchant_name}'.")
+            alert_item = {
+                "platform": "ShopeeFood",
+                "portal": merchant_name,
+                "merchant_id": str(merchant_id or ""),
+                "username": m.get("custom_username") or custom_username or DEFAULT_USERNAME,
+                "tipe": "DATA_KOSONG",
+                "pesan": f"Login berhasil namun data store ShopeePartner kosong (0 store)"
+            }
+            detector_alerts.append(alert_item)
+            print(f"🚨 [PERINGATAN DETEKTOR] [ShopeeFood] DATA KOSONG pada portal '{merchant_name}' (ID: {merchant_id}) (0 store ditemukan)!")
             continue
 
         # Filter stores
@@ -1405,6 +1438,20 @@ def run_pull(
             results, failed = fetch_store_details(client, filtered_stores)
             all_results.extend(results)
             print(f"  ✓ Detail fetched: {len(results)} OK, {failed} failed")
+
+    # Simpan hasil deteksi peringatan ke file cache JSON
+    try:
+        with open(detector_alerts_file, "w", encoding="utf-8") as f:
+            json.dump(detector_alerts, f, indent=2, ensure_ascii=False)
+    except Exception as ex:
+        pass
+
+    if detector_alerts:
+        print("\n" + "!" * 70)
+        print(f"  🚨 PERINGATAN DETEKTOR: Ditemukan {len(detector_alerts)} kegagalan pada platform ShopeeFood:")
+        for al in detector_alerts:
+            print(f"  • [{al['tipe']}] Portal: '{al['portal']}' (ID: {al.get('merchant_id', '-')}) - {al['pesan']}")
+        print("!" * 70 + "\n")
 
     # 4. Build & Export formatted Excel
     print()

@@ -717,7 +717,7 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_ev
                     continue
 
                 # Tampilkan pesan jika ada indikator status atau cocok kata kunci
-                is_status = any(line_s.startswith(p) for p in ("[*]", "[✓]", "🚀", "🌐", "➡️", "📧", "⏳", "✅", "⚠️", "❌", "🎉", "⚡", "🏢", "📍"))
+                is_status = any(line_s.startswith(p) for p in ("[*]", "[✓]", "🚀", "🌐", "➡️", "📧", "⏳", "✅", "⚠️", "❌", "🎉", "⚡", "🏢", "📍", "🚨"))
                 has_kw = any(k.lower() in line_s.lower() for k in keywords)
                 if is_status or has_kw:
                     on_log(line_s[:85])
@@ -752,8 +752,21 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
         "gofood": None,
         "grab": None,
         "shopee": None,
-        "shopee_merchants": {}
+        "shopee_merchants": {},
+        "detector_warnings": []
     }
+
+    # Bersihkan file cache detektor lama
+    for alert_f in [
+        GOFOOD_DIR / "cache" / "gofood_detector_alerts.json",
+        GRAB_DIR / "cache" / "grab_detector_alerts.json",
+        SHOPEE_DIR / "data" / "shopee_detector_alerts.json",
+    ]:
+        if alert_f.exists():
+            try:
+                os.remove(alert_f)
+            except Exception:
+                pass
 
     def send_log(pct, msg):
         if progress_cb:
@@ -804,7 +817,7 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
         rc = run_subprocess_stream(
             cmd,
             cwd=GOFOOD_DIR,
-            keywords=("Store ID", "Berhasil", "Portal", "Login", "Owner", "Restricted", "Memproses", "OTP", "Filter", "Gagal"),
+            keywords=("Store ID", "Berhasil", "Portal", "Login", "Owner", "Restricted", "Memproses", "OTP", "Filter", "Gagal", "PERINGATAN", "DETEKTOR", "GAGAL_LOGIN", "DATA_KOSONG"),
             on_log=lambda m: send_log(25, f"[GoFood] {m}"),
             timeout_sec=160,
             cancel_event=cancel_event
@@ -839,7 +852,7 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
         rc = run_subprocess_stream(
             cmd,
             cwd=GRAB_DIR,
-            keywords=("Group ID", "Berhasil", "Target", "Portal", "Login", "Store", "Bank", "Owner", "Filter", "Gagal", "Password", "Salah", "Master@123", "fallback", "Sukses"),
+            keywords=("Group ID", "Berhasil", "Target", "Portal", "Login", "Store", "Bank", "Owner", "Filter", "Gagal", "Password", "Salah", "Master@123", "fallback", "Sukses", "PERINGATAN", "DETEKTOR", "GAGAL_LOGIN", "DATA_KOSONG"),
             on_log=lambda m: send_log(55, f"[Grab] {m}"),
             timeout_sec=180,
             cancel_event=cancel_event
@@ -961,7 +974,7 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                     rc_sh = run_subprocess_stream(
                         cmd,
                         cwd=SHOPEE_DIR,
-                        keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai", "Token", "SYNC", "auth"),
+                        keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai", "Token", "SYNC", "auth", "PERINGATAN", "DETEKTOR", "GAGAL_LOGIN", "DATA_KOSONG"),
                         on_log=lambda m: send_log(74, f"[Shopee] {m}"),
                         timeout_sec=180,
                         cancel_event=cancel_event
@@ -974,6 +987,25 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
         except Exception as e:
             scrape_status["shopee"] = 1
             send_log(76, f"⚠️ [ShopeeFood] Exception scraper: {e}")
+
+    # Kumpulkan seluruh peringatan detektor dari semua platform
+    detector_warnings = []
+    for alert_path in [
+        GOFOOD_DIR / "cache" / "gofood_detector_alerts.json",
+        GRAB_DIR / "cache" / "grab_detector_alerts.json",
+        SHOPEE_DIR / "data" / "shopee_detector_alerts.json",
+    ]:
+        if alert_path.exists():
+            try:
+                with open(alert_path, "r", encoding="utf-8") as f:
+                    items = json.load(f)
+                    if isinstance(items, list):
+                        detector_warnings.extend(items)
+            except Exception:
+                pass
+    scrape_status["detector_warnings"] = detector_warnings
+    if detector_warnings:
+        send_log(77, f"🚨 Ditemukan {len(detector_warnings)} peringatan detektor dari platform!")
 
     return scrape_status
 
@@ -1032,17 +1064,42 @@ def verify_extraction_completeness(expected_df, owner_df, scrape_status=None):
         if not found_valid:
             reason = "Store ID kosong / data toko tidak lengkap"
             app_lower = app.lower()
-            if "gofood" in app_lower and scrape_status.get("gofood") not in (None, 0):
-                reason = f"Proses GoFood scraper keluar status {scrape_status.get('gofood')}"
-            elif "grab" in app_lower and scrape_status.get("grab") not in (None, 0):
-                reason = f"Proses Grab scraper keluar status {scrape_status.get('grab')}"
-            elif "shopee" in app_lower:
-                sh_details = scrape_status.get("shopee_merchants", {})
-                for m_name, m_rc in sh_details.items():
-                    if norm(m_name) in norm(portal_name) or norm(portal_name) in norm(m_name):
-                        if m_rc != 0:
-                            reason = f"Gagal switch merchant Shopee '{m_name}'"
+
+            # Periksa apakah ada catatan peringatan detektor dari platform
+            for w in scrape_status.get("detector_warnings", []):
+                w_plat = str(w.get("platform", "")).lower()
+                w_portal = str(w.get("portal", "")).lower()
+                w_user = str(w.get("username", "") or w.get("email", "")).lower()
+                if (w_plat in app_lower) or (app_lower in w_plat):
+                    match_alert = False
+                    if norm(w_portal) and (norm(w_portal) in norm(portal_name) or norm(portal_name) in norm(w_portal)):
+                        match_alert = True
+                    elif norm(w_user) and (norm(w_user) in norm(user_name) or norm(user_name) in norm(w_user)):
+                        match_alert = True
+                    elif norm(w_portal) and (norm(w_portal) in norm(outlet_name) or norm(outlet_name) in norm(w_portal)):
+                        match_alert = True
+
+                    if match_alert:
+                        if w.get("tipe") == "GAGAL_LOGIN":
+                            reason = f"Gagal login/auth ({w.get('pesan', 'Kredensial/OTP bermasalah')})"
+                        elif w.get("tipe") == "DATA_KOSONG":
+                            reason = "Data outlet kosong di portal (0 outlet)"
+                        else:
+                            reason = w.get("pesan", reason)
                         break
+
+            if reason == "Store ID kosong / data toko tidak lengkap":
+                if "gofood" in app_lower and scrape_status.get("gofood") not in (None, 0):
+                    reason = f"Proses GoFood scraper keluar status {scrape_status.get('gofood')}"
+                elif "grab" in app_lower and scrape_status.get("grab") not in (None, 0):
+                    reason = f"Proses Grab scraper keluar status {scrape_status.get('grab')}"
+                elif "shopee" in app_lower:
+                    sh_details = scrape_status.get("shopee_merchants", {})
+                    for m_name, m_rc in sh_details.items():
+                        if norm(m_name) in norm(portal_name) or norm(portal_name) in norm(m_name):
+                            if m_rc != 0:
+                                reason = f"Gagal switch merchant Shopee '{m_name}'"
+                            break
 
             missing_items.append({
                 "aplikator": app,
@@ -1247,13 +1304,15 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             owner_df = sort_df_by_aplikator(owner_df)
             expected_df = sort_df_by_aplikator(expected_df)
 
-            # Verifikasi kelengkapan ekstraksi terhadap Vercel Sheet
+            # Verifikasi kelengkapan ekstraksi terhadap Vercel Sheet & Detektor Platform
             missing_items = verify_extraction_completeness(expected_df, owner_df, scrape_status)
-            is_partial = len(missing_items) > 0
+            detector_warnings = scrape_status.get("detector_warnings", [])
+            is_partial = len(missing_items) > 0 or len(detector_warnings) > 0
             completed_count = max(0, len(expected_df) - len(missing_items))
 
             if is_partial:
-                log(86, f"⚠️ Selesai dengan catatan: {len(missing_items)} outlet belum lengkap / gagal ditarik live.")
+                warn_note = f", {len(detector_warnings)} peringatan platform" if detector_warnings else ""
+                log(86, f"⚠️ Selesai dengan catatan: {len(missing_items)} outlet belum lengkap{warn_note}.")
             else:
                 log(86, f"✅ Seluruh {len(expected_df)} outlet target berhasil ditarik lengkap.")
 
@@ -1294,6 +1353,7 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                         "completed_count": completed_count,
                         "expected_count": len(expected_df),
                         "missing_items": missing_items,
+                        "detector_warnings": detector_warnings,
                         "gofood": go_n,
                         "grab": gr_n,
                         "shopee": sh_n,
@@ -1313,6 +1373,7 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                 "completed_count": completed_count,
                 "expected_count": len(expected_df),
                 "missing_items": missing_items,
+                "detector_warnings": detector_warnings,
                 "gofood": go_n,
                 "grab": gr_n,
                 "shopee": sh_n,
