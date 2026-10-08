@@ -236,6 +236,17 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
                     "output": os.path.join(OUTPUT_DIR, f"{safe_portal_name}.xlsx")
                 })
 
+    # Disambiguasi nama portal jika terdapat beberapa akun login dengan nama portal/outlet yang sama
+    from collections import Counter
+    portal_counts = Counter(p["name"] for p in portals)
+    for p in portals:
+        if portal_counts[p["name"]] > 1 and p.get("username") and p["username"] != "-":
+            p["name"] = f"{p['name']} - {p['username']}"
+            safe_cache_name = get_safe_cache_filename(p["name"])
+            safe_portal_name = "".join([c for c in p["name"] if c.isalpha() or c.isdigit() or c == ' ']).rstrip()
+            p["cache_file"] = os.path.join(CACHE_DIR, safe_cache_name)
+            p["output"] = os.path.join(OUTPUT_DIR, f"{safe_portal_name}.xlsx")
+
     logger.info(f"[✓] Terdaftar {len(portals)} portal GrabFood valid [{source_type.upper()}] untuk diproses.")
     return portals
 
@@ -842,10 +853,23 @@ async def fetch_merchant_list_fast(headers, cookies_dict, cred, max_retries=3):
             logger.info(f"⚡ [FAST PATH] Berhasil mengekstrak {len(all_results)} outlet unik via curl_cffi!")
         return all_results
 
+def get_session_and_header_paths(cred):
+    """Mencari file session dan headers untuk kredensial Grab dengan fallback username."""
+    primary_session = os.path.join(SESSIONS_DIR, f"grab_session_{cred['name']}.json")
+    primary_headers = os.path.join(SESSIONS_DIR, f"grab_headers_{cred['name']}.json")
+    
+    # Jika sesi primer belum ada, cek apakah ada file sesi berbasis username
+    if not os.path.exists(primary_session) and cred.get("username") and cred["username"] != "-":
+        user_session = os.path.join(SESSIONS_DIR, f"grab_session_{cred['username']}.json")
+        if os.path.exists(user_session):
+            user_headers = user_session.replace("grab_session_", "grab_headers_")
+            return user_session, user_headers
+            
+    return primary_session, primary_headers
+
 async def run_scraper_for_credential(playwright, cred, force_fresh=False, headless=None):
     global auth_headers
-    headers_file = os.path.join(SESSIONS_DIR, f"grab_headers_{cred['name']}.json")
-    session_file = os.path.join(SESSIONS_DIR, f"grab_session_{cred['name']}.json")
+    session_file, headers_file = get_session_and_header_paths(cred)
     
     if not force_fresh and os.path.exists(session_file):
         try:
@@ -897,7 +921,7 @@ async def run_scraper_for_credential_playwright(playwright, cred, force_fresh=Fa
         ]
     )
 
-    session_file = os.path.join(SESSIONS_DIR, f"grab_session_{cred['name']}.json")
+    session_file, headers_file = get_session_and_header_paths(cred)
 
     context_options = {
         "viewport": {"width": 1280, "height": 800},
@@ -1222,7 +1246,7 @@ def save_formatted_excel(df, file_path):
     wb.save(file_path)
 
 
-def save_portal_results(outlets_data, cred, source_type):
+def save_portal_results(outlets_data, cred, source_type, accumulated_owner_stores=None):
     """Menyimpan data portal Grab ke cache JSON dan output Excel per-owner."""
     if not outlets_data:
         logger.warning(f"   ⚠️ Tidak ada data outlet untuk disimpan pada portal '{cred['name']}'.")
@@ -1253,9 +1277,10 @@ def save_portal_results(outlets_data, cred, source_type):
     except Exception as e:
         logger.warning(f"   ⚠️ Gagal menyimpan cache JSON: {e}")
         
-    # 2. Simpan ke Output Excel per-owner
+    # 2. Simpan ke Output Excel per-owner (menggunakan data akumulasi owner jika tersedia)
     timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H_%M")
-    owner_df = pd.DataFrame(outlets_data)
+    export_data = accumulated_owner_stores if accumulated_owner_stores else outlets_data
+    owner_df = pd.DataFrame(export_data)
     if '_owner' in owner_df.columns:
         owner_df = owner_df.drop(columns=['_owner'])
     if 'Store ID' in owner_df.columns:
@@ -1439,7 +1464,9 @@ async def main():
         target_credentials = [c for c in portals if str(c.get("owner", "")).strip().lower() == owner_clean or owner_clean in str(c.get("owner", "")).strip().lower()]
         logger.info(f"[*] Filter Owner '{args.owner}': Ditemukan {len(target_credentials)} akun portal GrabFood.")
     elif args.outlet:
-        target_credentials = [c for c in portals if c["name"] == args.outlet]
+        target_credentials = [c for c in portals if c["name"].strip().lower() == args.outlet.strip().lower()]
+        if not target_credentials:
+            target_credentials = [c for c in portals if c.get("brand", "").strip().lower() == args.outlet.strip().lower() or args.outlet.strip().lower() in c["name"].strip().lower()]
         if not target_credentials:
             logger.error(f"Outlet '{args.outlet}' not found in credentials.")
             return
@@ -1521,7 +1548,13 @@ async def main():
     async with async_playwright() as playwright:
         for idx, cred in enumerate(target_credentials, 1):
             cred_user = str(cred.get("username") or "").strip().lower()
-            if cred["name"] in completed_portal_names or (cred_user and cred_user != "-" and cred_user in completed_usernames):
+            is_already_done = False
+            if cred_user and cred_user != "-":
+                is_already_done = (cred_user in completed_usernames)
+            else:
+                is_already_done = (cred["name"] in completed_portal_names)
+
+            if is_already_done:
                 logger.info(f"⏩ [{idx}/{len(target_credentials)}] Portal '{cred['name']}' / Akun '{cred_user}' sudah selesai sebelumnya (Dilewati).")
                 continue
 
@@ -1543,8 +1576,10 @@ async def main():
                     if cred_user and cred_user != "-":
                         completed_usernames.add(cred_user)
                     
-                    # Simpan ke Cache JSON & Output Excel per-owner secara Real-Time
-                    save_portal_results(valid_stores, cred, source_type)
+                    # Simpan ke Cache JSON & Output Excel per-owner secara Real-Time (dengan akumulasi outlet owner)
+                    owner_val = cred.get("owner", cred["name"])
+                    owner_accumulated_stores = [s for s in all_collected_stores if s.get("_owner") == owner_val]
+                    save_portal_results(valid_stores, cred, source_type, accumulated_owner_stores=owner_accumulated_stores)
 
                     # Simpan checkpoint progress seketika (Real-Time Auto-Save)
                     try:
