@@ -884,20 +884,6 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                     return re.sub(r'[^a-z0-9]', '', re.sub(r'\[.*?\]', '', (s or '').lower()))
 
                 for _, r in o_shopee.iterrows():
-                    # Ambil kredensial staf jika ada
-                    staff_u = ""
-                    staff_p = ""
-                    for u_col in ["S Username Akses Staff", "Username Akses Staff S", "S Bot Username Akses Staff", "S BD Username Akses Staff", "S Allvbadmin Username Akses Staff"]:
-                        val = str(r.get(u_col) or "").strip()
-                        if val and val.lower() not in ("nan", "none", "-"):
-                            staff_u = val
-                            break
-                    for p_col in ["S Kata Sandi Akses Staff", "Kata Sandi Akses Staff S", "S Bot Kata Sandi Akses Staff", "S BD Kata Sandi Akses Staff", "S Allvbadmin Kata Sandi Akses Staff"]:
-                        val = str(r.get(p_col) or "").strip()
-                        if val and val.lower() not in ("nan", "none", "-"):
-                            staff_p = val
-                            break
-
                     portal_candidates = []
                     for col in ["Nama Portal", "Nama Akses", "Merchant Name"]:
                         val = str(r.get(col) or "").strip()
@@ -915,49 +901,45 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                         continue
 
                     best_match = None
-                    # Jika ada akun staf eksplisit, prioritaskan nama portal langsung tanpa mencocokkan ke allvbadmin
-                    if staff_u:
-                        chosen_val = portal_candidates[0] if portal_candidates else candidates[0]
-                    else:
-                        if known_shopee:
-                            target_pool = portal_candidates if portal_candidates else candidates
-                            # 1. Exact match pada target_pool
+                    if known_shopee:
+                        target_pool = portal_candidates if portal_candidates else candidates
+                        # 1. Exact match pada target_pool
+                        for c in target_pool:
+                            c_clean = c.lower().rstrip("_").strip()
+                            for k in known_shopee:
+                                if c_clean == k.lower().rstrip("_").strip():
+                                    best_match = k
+                                    break
+                            if best_match:
+                                break
+
+                        # 2. Normalized exact match
+                        if not best_match:
                             for c in target_pool:
-                                c_clean = c.lower().rstrip("_").strip()
+                                c_norm = _norm(c)
+                                if not c_norm:
+                                    continue
                                 for k in known_shopee:
-                                    if c_clean == k.lower().rstrip("_").strip():
+                                    if c_norm == _norm(k):
                                         best_match = k
                                         break
                                 if best_match:
                                     break
 
-                            # 2. Normalized exact match
-                            if not best_match:
-                                for c in target_pool:
-                                    c_norm = _norm(c)
-                                    if not c_norm:
-                                        continue
+                        # 3. Substring match
+                        if not best_match:
+                            for c in target_pool:
+                                c_norm = _norm(c)
+                                if len(c_norm) >= 4:
                                     for k in known_shopee:
-                                        if c_norm == _norm(k):
+                                        k_norm = _norm(k)
+                                        if len(k_norm) >= 4 and (c_norm in k_norm or k_norm in c_norm):
                                             best_match = k
                                             break
                                     if best_match:
                                         break
 
-                            # 3. Substring match HANYA jika bukan portal_candidates eksplisit
-                            if not best_match and not portal_candidates:
-                                for c in candidates:
-                                    c_norm = _norm(c)
-                                    if len(c_norm) >= 5:
-                                        for k in known_shopee:
-                                            k_norm = _norm(k)
-                                            if len(k_norm) >= 5 and (c_norm == k_norm):
-                                                best_match = k
-                                                break
-                                        if best_match:
-                                            break
-
-                        chosen_val = best_match or (portal_candidates[0] if portal_candidates else candidates[0])
+                    chosen_val = best_match or (portal_candidates[0] if portal_candidates else candidates[0])
 
                     # Filter spesifik jika retry_targets ditentukan
                     if retry_targets is not None:
@@ -965,21 +947,15 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                         if not any(st in chosen_val.lower() or chosen_val.lower() in st for st in shopee_targets if st):
                             continue
 
-                    target_key = (chosen_val.lower(), staff_u.lower())
-                    if not any((t["name"].lower(), t.get("username", "").lower()) == target_key for t in merchant_targets):
-                        merchant_targets.append({
-                            "name": chosen_val,
-                            "username": staff_u,
-                            "password": staff_p,
-                        })
+                    if chosen_val and chosen_val not in merchant_targets:
+                        merchant_targets.append(chosen_val)
             
             if merchant_targets:
                 headless_shopee = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
                 if not headless_shopee and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
                     headless_shopee = True
 
-                for idx, t_info in enumerate(merchant_targets, start=1):
-                    merchant_name = t_info["name"]
+                for idx, merchant_name in enumerate(merchant_targets, start=1):
                     if cancel_event and cancel_event.is_set():
                         send_log(100, "🛑 Penarikan ShopeeFood dibatalkan oleh pengguna.")
                         break
@@ -991,8 +967,6 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                         "--merchant-name", merchant_name,
                         "--headless" if headless_shopee else "--gui"
                     ]
-                    if t_info.get("username") and t_info.get("password"):
-                        cmd.extend(["--username", t_info["username"], "--password", t_info["password"]])
 
                     rc_sh = run_subprocess_stream(
                         cmd,
