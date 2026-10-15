@@ -558,8 +558,16 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
             cur_ui_name = (cur_el.text or "").strip()
             cur_clean = cur_ui_name.lower().rstrip("_").strip()
             if cur_clean and (cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean):
-                print(f"  ✅ [MERCHANT] Sudah aktif pada merchant: '{cur_ui_name}'. Tidak perlu switch.")
-                return True
+                is_id_matched = True
+                if target_id:
+                    uinfo = get_driver_user_info(driver)
+                    act_mid = str(uinfo.get("merchantId") or "") if uinfo else ""
+                    if act_mid and act_mid != str(target_id):
+                        is_id_matched = False
+                        print(f"  📍 [MERCHANT] UI name '{cur_ui_name}' cocok, tapi active ID '{act_mid}' != target ID '{target_id}'. Melanjutkan switch...")
+                if is_id_matched:
+                    print(f"  ✅ [MERCHANT] Sudah aktif pada merchant: '{cur_ui_name}'. Tidak perlu switch.")
+                    return True
         except Exception:
             pass
 
@@ -587,12 +595,18 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                         cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
                         cur_clean = cur_nm.lower().rstrip("_").strip()
                         if cur_clean and (cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean):
-                            print(f"  ✅ [DIRECT API SWITCH] Berhasil beralih ke merchant: '{cur_nm}'.")
+                            if target_id:
+                                uinfo = get_driver_user_info(driver)
+                                act_mid = str(uinfo.get("merchantId") or "") if uinfo else ""
+                                if act_mid and act_mid != str(target_id):
+                                    time.sleep(1)
+                                    continue
+                            print(f"  ✅ [DIRECT API SWITCH] Berhasil beralih ke merchant: '{cur_nm}' (ID: {target_id or '-'}).")
                             return True
                     except Exception:
                         pass
                     time.sleep(1)
-                print(f"  ⚠️ Direct API switch dijalankan, namun UI belum terupdate ke '{target_name}'. Mencoba via UI dropdown...")
+                print(f"  ⚠️ Direct API switch dijalankan, namun UI/API belum terupdate ke ID '{target_id}'. Mencoba via UI dropdown...")
 
         # ATTEMPT METHOD 2: Selector page right after login
         current_url = driver.current_url
@@ -842,6 +856,11 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
                         cur_nm = (driver.find_element(By.CSS_SELECTOR, ".merchantName, .user-info").text or "").strip()
                         cur_clean = cur_nm.lower().rstrip("_").strip()
                         if cur_clean and (cur_clean == t_clean or t_clean in cur_clean or cur_clean in t_clean):
+                            if target_id:
+                                uinfo = get_driver_user_info(driver)
+                                act_mid = str(uinfo.get("merchantId") or "") if uinfo else ""
+                                if act_mid and act_mid != str(target_id):
+                                    continue
                             switched_ok = True
                             break
                     except Exception:
@@ -875,7 +894,14 @@ def enhanced_auto_switch_merchant(driver, target_name, is_retry=False):
         final_clean = final_ui.lower().rstrip("_").strip()
 
         if final_clean and (t_clean in final_clean or final_clean in t_clean):
-            return True
+            if target_id:
+                uinfo = get_driver_user_info(driver)
+                act_mid = str(uinfo.get("merchantId") or "") if uinfo else ""
+                if act_mid and act_mid != str(target_id):
+                    print(f"  ❌ [STRICT VALIDATION] UI name '{final_ui}' cocok, tapi merchant ID '{act_mid}' != target ID '{target_id}'.")
+                    final_clean = ""
+            if final_clean:
+                return True
 
         if not is_retry:
             print(f"  ⚠️ [MERCHANT] Gagal beralih ke '{target_name}' (aktif: '{final_ui}'). Segera memicu recovery login ulang master allvbadmin...")
@@ -956,6 +982,8 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, tar
         close_browser=False,
         target_name=target_name,
         interactive=False,
+        target_merchant_id=target_merchant_id,
+        target_tob_uid=target_tob_uid,
     )
 
     if not session_data or "driver" not in session_data:

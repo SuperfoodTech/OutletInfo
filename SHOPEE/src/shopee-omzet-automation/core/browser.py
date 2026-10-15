@@ -1328,7 +1328,7 @@ def return_to_selector(driver) -> bool:
             pass
         return True
 
-def get_session(username=None, password=None, phone=None, headless=None, close_browser=True, target_name=None, interactive=True) -> dict | None:
+def get_session(username=None, password=None, phone=None, headless=None, close_browser=True, target_name=None, interactive=True, target_merchant_id=None, target_tob_uid=None) -> dict | None:
     if headless is None:
         headless = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
     if not headless and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
@@ -1655,6 +1655,9 @@ def get_session(username=None, password=None, phone=None, headless=None, close_b
             elif target_name:
                 if active_name.lower() != target_name.lower():
                     log.info(f"📍 [MERCHANT] Current: {active_name} | Target: {target_name}. Switching...")
+                    do_switch = True
+                elif target_merchant_id and active_id and str(active_id) != str(target_merchant_id):
+                    log.info(f"📍 [MERCHANT] Name matches target ({target_name}), but active ID '{active_id}' != target ID '{target_merchant_id}'. Switching...")
                     do_switch = True
                 elif not active_id or active_id == "None":
                     log.info(f"⚠️ [MERCHANT] Target is {active_name}, but active_id is missing! Forcing switch to hydrate session cookies...")

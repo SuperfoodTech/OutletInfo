@@ -884,51 +884,80 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                     return re.sub(r'[^a-z0-9]', '', re.sub(r'\[.*?\]', '', (s or '').lower()))
 
                 for _, r in o_shopee.iterrows():
-                    candidates = []
-                    for col in ["Nama Portal", "Nama Akses", "Merchant Name", "Nama Brand", "Nama Outlet"]:
-                        val = str(r.get(col) or "").strip()
-                        if val and val.lower() not in ("nan", "none", "-") and val not in candidates:
-                            candidates.append(val)
+                    # Ambil kredensial staf jika ada
+                    staff_u = ""
+                    staff_p = ""
+                    for u_col in ["S Username Akses Staff", "Username Akses Staff S", "S Bot Username Akses Staff", "S BD Username Akses Staff", "S Allvbadmin Username Akses Staff"]:
+                        val = str(r.get(u_col) or "").strip()
+                        if val and val.lower() not in ("nan", "none", "-"):
+                            staff_u = val
+                            break
+                    for p_col in ["S Kata Sandi Akses Staff", "Kata Sandi Akses Staff S", "S Bot Kata Sandi Akses Staff", "S BD Kata Sandi Akses Staff", "S Allvbadmin Kata Sandi Akses Staff"]:
+                        val = str(r.get(p_col) or "").strip()
+                        if val and val.lower() not in ("nan", "none", "-"):
+                            staff_p = val
+                            break
 
+                    portal_candidates = []
+                    for col in ["Nama Portal", "Nama Akses", "Merchant Name"]:
+                        val = str(r.get(col) or "").strip()
+                        if val and val.lower() not in ("nan", "none", "-") and val not in portal_candidates:
+                            portal_candidates.append(val)
+
+                    other_candidates = []
+                    for col in ["Nama Brand", "Nama Outlet"]:
+                        val = str(r.get(col) or "").strip()
+                        if val and val.lower() not in ("nan", "none", "-") and val not in other_candidates and val not in portal_candidates:
+                            other_candidates.append(val)
+
+                    candidates = portal_candidates + other_candidates
                     if not candidates:
                         continue
 
                     best_match = None
-                    if known_shopee:
-                        for c in candidates:
-                            c_clean = c.lower().rstrip("_").strip()
-                            for k in known_shopee:
-                                if c_clean == k.lower().rstrip("_").strip():
-                                    best_match = k
-                                    break
-                            if best_match:
-                                break
-
-                        if not best_match:
-                            for c in candidates:
-                                c_norm = _norm(c)
-                                if not c_norm:
-                                    continue
+                    # Jika ada akun staf eksplisit, prioritaskan nama portal langsung tanpa mencocokkan ke allvbadmin
+                    if staff_u:
+                        chosen_val = portal_candidates[0] if portal_candidates else candidates[0]
+                    else:
+                        if known_shopee:
+                            target_pool = portal_candidates if portal_candidates else candidates
+                            # 1. Exact match pada target_pool
+                            for c in target_pool:
+                                c_clean = c.lower().rstrip("_").strip()
                                 for k in known_shopee:
-                                    if c_norm == _norm(k):
+                                    if c_clean == k.lower().rstrip("_").strip():
                                         best_match = k
                                         break
                                 if best_match:
                                     break
 
-                        if not best_match:
-                            for c in candidates:
-                                c_norm = _norm(c)
-                                if len(c_norm) >= 4:
+                            # 2. Normalized exact match
+                            if not best_match:
+                                for c in target_pool:
+                                    c_norm = _norm(c)
+                                    if not c_norm:
+                                        continue
                                     for k in known_shopee:
-                                        k_norm = _norm(k)
-                                        if c_norm in k_norm or k_norm in c_norm:
+                                        if c_norm == _norm(k):
                                             best_match = k
                                             break
                                     if best_match:
                                         break
 
-                    chosen_val = best_match or candidates[0]
+                            # 3. Substring match HANYA jika bukan portal_candidates eksplisit
+                            if not best_match and not portal_candidates:
+                                for c in candidates:
+                                    c_norm = _norm(c)
+                                    if len(c_norm) >= 5:
+                                        for k in known_shopee:
+                                            k_norm = _norm(k)
+                                            if len(k_norm) >= 5 and (c_norm == k_norm):
+                                                best_match = k
+                                                break
+                                        if best_match:
+                                            break
+
+                        chosen_val = best_match or (portal_candidates[0] if portal_candidates else candidates[0])
 
                     # Filter spesifik jika retry_targets ditentukan
                     if retry_targets is not None:
@@ -936,14 +965,8 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                         if not any(st in chosen_val.lower() or chosen_val.lower() in st for st in shopee_targets if st):
                             continue
 
-                    staff_u = str(r.get("Username Akses Staff S") or "").strip()
-                    staff_p = str(r.get("Kata Sandi Akses Staff S") or "").strip()
-                    if staff_u.lower() in ("nan", "none", "-"):
-                        staff_u = ""
-                    if staff_p.lower() in ("nan", "none", "-"):
-                        staff_p = ""
-
-                    if not any(t["name"] == chosen_val for t in merchant_targets):
+                    target_key = (chosen_val.lower(), staff_u.lower())
+                    if not any((t["name"].lower(), t.get("username", "").lower()) == target_key for t in merchant_targets):
                         merchant_targets.append({
                             "name": chosen_val,
                             "username": staff_u,
@@ -1020,6 +1043,7 @@ def verify_extraction_completeness(expected_df, owner_df, scrape_status=None):
 
     scrape_status = scrape_status or {}
     missing_items = []
+    matched_act_indices = set()
 
     def norm(s):
         import re
@@ -1039,7 +1063,10 @@ def verify_extraction_completeness(expected_df, owner_df, scrape_status=None):
             norm_exp_outlet = norm(outlet_name)
             norm_exp_user = norm(user_name)
 
-            for _, act_row in matched_rows.iterrows():
+            for act_idx, act_row in matched_rows.iterrows():
+                if act_idx in matched_act_indices:
+                    continue
+
                 store_id = str(act_row.get("Store ID") or "").strip()
                 has_store_id = bool(store_id and store_id.lower() not in ("nan", "none", "-", ""))
 
@@ -1048,9 +1075,10 @@ def verify_extraction_completeness(expected_df, owner_df, scrape_status=None):
                 act_user = norm(act_row.get("Nama Pengguna") or "")
 
                 match_identity = False
-                if norm_exp_portal and norm_exp_portal in act_portal:
+                # Prioritaskan pencocokan outlet, lalu portal
+                if norm_exp_outlet and (norm_exp_outlet == act_outlet or (len(norm_exp_outlet) >= 4 and (norm_exp_outlet in act_outlet or act_outlet in norm_exp_outlet))):
                     match_identity = True
-                elif norm_exp_outlet and norm_exp_outlet in act_outlet:
+                elif norm_exp_portal and (norm_exp_portal == act_portal or (len(norm_exp_portal) >= 4 and (norm_exp_portal in act_portal or act_portal in norm_exp_portal))):
                     match_identity = True
                 elif norm_exp_user and norm_exp_user == act_user:
                     match_identity = True
@@ -1059,6 +1087,7 @@ def verify_extraction_completeness(expected_df, owner_df, scrape_status=None):
 
                 if match_identity and has_store_id:
                     found_valid = True
+                    matched_act_indices.add(act_idx)
                     break
 
         if not found_valid:
