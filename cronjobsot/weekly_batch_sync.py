@@ -136,6 +136,49 @@ def send_discord_summary(summary_data: dict):
     return False
 
 
+def send_discord_start(total_owners: int, date_str: str):
+    """Mengirimkan pemberitahuan ke Discord bahwa batch sync mingguan telah dimulai."""
+    embed = {
+        "title": "🚀 [CRON] SINKRONISASI MINGGUAN DIMULAI",
+        "description": "Proses penarikan data mingguan untuk seluruh owner sedang berjalan otomatis di server.",
+        "color": 0x3b82f6,
+        "fields": [
+            {"name": "📅 Tanggal Eksekusi", "value": date_str, "inline": True},
+            {"name": "👥 Total Target", "value": f"**{total_owners}** Owner", "inline": True},
+            {"name": "⚙️ Status", "value": "Sedang memproses penarikan listing, kompilasi Excel, upload Drive & sinkronisasi SOT...", "inline": False}
+        ],
+        "footer": {
+            "text": "Outlet Info Automation • Weekly Cron Job System"
+        },
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }
+
+    if DISCORD_WEBHOOK_URL:
+        try:
+            resp = requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=15)
+            if resp.status_code in (200, 204):
+                print("  ✓ Notifikasi mulai terkirim ke Discord via Webhook.")
+                return True
+        except Exception as e:
+            print(f"  [!] Gagal mengirim notifikasi mulai ke Webhook: {e}")
+
+    if DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID:
+        try:
+            url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages"
+            headers = {
+                "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            resp = requests.post(url, headers=headers, json={"embeds": [embed]}, timeout=15)
+            if resp.status_code in (200, 201):
+                print(f"  ✓ Notifikasi mulai terkirim ke Discord Channel {DISCORD_CHANNEL_ID} via Bot API.")
+                return True
+        except Exception as e:
+            print(f"  [!] Exception saat mengirim notifikasi mulai ke Discord: {e}")
+
+    return False
+
+
 def load_checkpoint(date_str: str) -> dict:
     """Memuat data checkpoint harian jika ada."""
     cp_file = CACHE_DIR / f"weekly_checkpoint_{date_str}.json"
@@ -224,6 +267,10 @@ def run_weekly_sync(
         "sheet_sync": {}
     }
     completed_set = set(cp.get("completed_owners", []))
+
+    # Kirim notifikasi awal ke Discord (jika baru mulai pertama kali)
+    if not cp.get("completed_owners"):
+        send_discord_start(total_target, today_display)
 
     python_bin = sys.executable
 
