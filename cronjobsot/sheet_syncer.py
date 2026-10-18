@@ -8,6 +8,7 @@ melalui Google Apps Script Web App (APP_SCRIPT_URL).
 
 import os
 import json
+import time
 import requests
 import pandas as pd
 from pathlib import Path
@@ -143,11 +144,16 @@ def sync_outlets_to_google_sheet(
     df_or_rows,
     headers: list[str] = None,
     app_script_url: str = None,
-    chunk_size: int = 25
+    chunk_size: int = 150,
+    max_retries: int = 3,
+    timeout: int = 180,
+    retry_delay: int = 5,
+    cooldown: float = 2.0
 ) -> tuple[bool, dict]:
     """
     Mengirimkan baris outlet ke Apps Script untuk di-upsert ke Google Spreadsheet tab 'SOT'.
     Data yang sama akan ditimpa dan kolom 'Terakhir Diperbaharui' akan diperbarui.
+    Dilengkapi batching (chunking), retry dengan backoff eksponensial, dan timeout 180 detik.
     """
     url = app_script_url or APP_SCRIPT_URL
     if not url:
@@ -169,14 +175,15 @@ def sync_outlets_to_google_sheet(
     if not rows:
         return True, {"status": "skipped", "message": "Tidak ada baris data untuk dikirim"}
 
-    print(f"[*] Menyiapkan sinkronisasi {len(rows)} baris outlet ke Google Sheet '{TARGET_SHEET_NAME}'...")
+    total_rows = len(rows)
+    total_chunks = (total_rows + chunk_size - 1) // chunk_size
+    print(f"[*] Menyiapkan sinkronisasi {total_rows} baris outlet ke Google Sheet '{TARGET_SHEET_NAME}' ({total_chunks} batch @ {chunk_size} baris)...")
 
     total_updated = 0
     total_inserted = 0
     final_res = {}
 
-    # Kirim per-chunk untuk menghindari batas payload / timeout Apps Script
-    for i in range(0, len(rows), chunk_size):
+    for chunk_idx, i in enumerate(range(0, total_rows, chunk_size), 1):
         chunk = rows[i : i + chunk_size]
         payload = {
             "action": "sync_outlets",
@@ -187,26 +194,53 @@ def sync_outlets_to_google_sheet(
             "rows": chunk
         }
 
-        try:
-            resp = requests.post(url, json=payload, timeout=90)
-            resp.raise_for_status()
-            res_json = resp.json()
+        chunk_success = False
+        last_error = None
 
-            if res_json.get("status") == "success":
-                up = res_json.get("updated", 0)
-                ins = res_json.get("inserted", 0)
-                total_updated += up
-                total_inserted += ins
-                final_res = res_json
-                print(f"  ✓ Chunk {i // chunk_size + 1}: {up} ditimpa, {ins} baru.")
-            else:
-                err_msg = res_json.get("message", "Unknown error from Apps Script")
-                print(f"  [!] Gagal sinkronisasi chunk {i // chunk_size + 1}: {err_msg}")
-                return False, {"error": err_msg, "chunk": i}
-        except Exception as e:
-            print(f"  [!] Exception saat mengirim ke Apps Script: {e}")
-            return False, {"error": str(e), "chunk": i}
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"  [Batch {chunk_idx}/{total_chunks}] Mengirim {len(chunk)} baris (percobaan {attempt}/{max_retries})...")
+                resp = requests.post(url, json=payload, timeout=timeout)
+                resp.raise_for_status()
+                res_json = resp.json()
 
+                if res_json.get("status") == "success":
+                    up = res_json.get("updated", 0)
+                    ins = res_json.get("inserted", 0)
+                    total_updated += up
+                    total_inserted += ins
+                    final_res = res_json
+                    print(f"  ✓ Batch {chunk_idx}/{total_chunks}: {up} ditimpa, {ins} baru.")
+                    chunk_success = True
+                    break
+                else:
+                    last_error = res_json.get("message", "Unknown error from Apps Script")
+                    print(f"  [!] Respon gagal dari Apps Script pada batch {chunk_idx} (percobaan {attempt}): {last_error}")
+            except Exception as e:
+                last_error = str(e)
+                print(f"  [!] Exception saat mengirim batch {chunk_idx} (percobaan {attempt}): {last_error}")
+
+            if attempt < max_retries:
+                sleep_sec = retry_delay * attempt
+                print(f"      Menunggu {sleep_sec}s sebelum mencoba ulang batch {chunk_idx}...")
+                time.sleep(sleep_sec)
+
+        if not chunk_success:
+            err_summary = f"Gagal pada batch {chunk_idx}/{total_chunks} setelah {max_retries} percobaan: {last_error}"
+            print(f"  ❌ {err_summary}")
+            return False, {
+                "error": err_summary,
+                "failed_chunk": chunk_idx,
+                "total_chunks": total_chunks,
+                "total_updated": total_updated,
+                "total_inserted": total_inserted
+            }
+
+        # Jeda pendinginan antar chunk agar Google Sheets tidak terkena document write lock
+        if i + chunk_size < total_rows and cooldown > 0:
+            time.sleep(cooldown)
+
+    final_res["status"] = "success"
     final_res["total_updated"] = total_updated
     final_res["total_inserted"] = total_inserted
     print(f"✅ [GOOGLE SHEET] Berhasil sinkronisasi tab '{TARGET_SHEET_NAME}': {total_updated} ditimpa, {total_inserted} baru.")
