@@ -350,21 +350,21 @@ def load_vercel_data(force_live=False):
     if "Aplikasi" in df.columns:
         df["Aplikator"] = df["Aplikasi"].apply(clean_app)
 
-    if "Nama Akses" in df.columns:
-        df["Nama Portal"] = df["Nama Akses"].astype(str).str.strip()
+    # Pastikan kolom Nama Portal ada dan bersih
+    if "Nama Portal" not in df.columns:
+        df["Nama Portal"] = ""
 
-    # Untuk Shopee, fallback Nama Portal ke Merchant Name
+    # Untuk Shopee, fallback Nama Portal ke Merchant Name jika kosong
     if "Merchant Name" in df.columns:
         df["Nama Portal"] = df.apply(
-            lambda r: r["Merchant Name"] if (pd.isna(r.get("Nama Portal")) or not str(r.get("Nama Portal")).strip()) and pd.notna(r.get("Merchant Name")) else r.get("Nama Portal", ""),
+            lambda r: r["Merchant Name"] if (pd.isna(r.get("Nama Portal")) or not str(r.get("Nama Portal")).strip() or str(r.get("Nama Portal")).strip().lower() in ("nan", "none")) and pd.notna(r.get("Merchant Name")) else r.get("Nama Portal", ""),
             axis=1
         )
 
     # Untuk GoFood, kosongkan kolom Nama Portal sesuai instruksi
     if "Aplikator" in df.columns:
         is_go = df["Aplikator"].astype(str).str.strip().str.lower().str.contains("go")
-        if "Nama Portal" in df.columns:
-            df.loc[is_go, "Nama Portal"] = ""
+        df.loc[is_go, "Nama Portal"] = ""
         if "Nama Portal.1" in df.columns:
             df.loc[is_go, "Nama Portal.1"] = ""
 
@@ -384,7 +384,7 @@ def write_data_to_sheet(ws, df, headers):
         'Nama Pemilik': ['Owner', 'Nama Pemilik', 'owner', 'pemilik'],
         'Nama Brand': ['Nama Outlet', 'Nama Brand', 'Brand', 'brand'],
         'Aplikator': ['Aplikasi', 'Aplikator', 'app', 'Platform'],
-        'Nama Portal': ['Nama Akses', 'Nama Portal', 'Merchant Name', 'portal'],
+        'Nama Portal': ['Nama Portal', 'Merchant Name', 'portal'],
         'Nama Listing': ['Nama Listing', 'Nama Outlet', 'Nama Brand', 'Listing'],
         'Nomor HP Akses Pemilik': ['S Nomor HP Akses Pemilik', 'Nomor HP Akses Pemilik', 'Nomor HP'],
         'Username Akses Pemilik': ['S Username Akses Pemilik', 'Username Akses Pemilik'],

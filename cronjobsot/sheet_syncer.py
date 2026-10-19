@@ -56,7 +56,7 @@ COL_ALIASES = {
     'Nama Pemilik': ['Owner', 'Nama Pemilik', 'owner', 'pemilik'],
     'Nama Brand': ['Nama Outlet', 'Nama Brand', 'Brand', 'brand'],
     'Aplikator': ['Aplikasi', 'Aplikator', 'app', 'Platform'],
-    'Nama Portal': ['Nama Akses', 'Nama Portal', 'Merchant Name', 'portal'],
+    'Nama Portal': ['Nama Portal', 'Merchant Name', 'portal'],
     'Nama Listing': ['Nama Listing', 'Nama Outlet', 'Nama Brand', 'Listing', 'store_name', 'outlet'],
     'Group ID': ['Group ID', 'group_id', 'GroupID', 'idmg', 'IDMG'],
     'Store ID': ['Store ID', 'store_id', 'StoreID', 'merchant_id'],
