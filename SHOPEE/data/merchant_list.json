@@ -15,7 +15,7 @@
           "invitationExpiredTime": 0,
           "isActive": true,
           "isBanned": false,
-          "isCurrentLoginUser": true,
+          "isCurrentLoginUser": false,
           "merchantId": 11012909,
           "merchantLogo": "",
           "merchantName": "RasaRiang",
@@ -549,6 +549,19 @@
           "isActive": true,
           "isBanned": false,
           "isCurrentLoginUser": false,
+          "merchantId": 23988560,
+          "merchantLogo": "",
+          "merchantName": "Bebek Bumbu Hitam Penyetan Rizqna",
+          "merchantStatus": 1,
+          "staffRole": 2,
+          "staffStatus": 1,
+          "staffTobUid": 13097348139
+        },
+        {
+          "invitationExpiredTime": 0,
+          "isActive": true,
+          "isBanned": false,
+          "isCurrentLoginUser": false,
           "merchantId": 1143475,
           "merchantLogo": "",
           "merchantName": "DEPOT NASI CAMPUR MIXMAX_",
@@ -673,6 +686,19 @@
           "staffRole": 2,
           "staffStatus": 1,
           "staffTobUid": 13863240836
+        },
+        {
+          "invitationExpiredTime": 0,
+          "isActive": true,
+          "isBanned": false,
+          "isCurrentLoginUser": true,
+          "merchantId": 23691166,
+          "merchantLogo": "",
+          "merchantName": "Ideologist",
+          "merchantStatus": 1,
+          "staffRole": 2,
+          "staffStatus": 1,
+          "staffTobUid": 13904520151
         },
         {
           "invitationExpiredTime": 0,

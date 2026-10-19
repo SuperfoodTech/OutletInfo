@@ -1158,6 +1158,15 @@ class OutletInfoBot(commands.Bot):
             )
         )
 
+        # Sinkronkan langsung ke setiap Guild agar instan muncul di Discord UI
+        for guild in self.guilds:
+            try:
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                print(f"[✓] Slash Commands instan disinkronkan ke Guild: {guild.name} ({guild.id})")
+            except Exception as e:
+                print(f"⚠️ Gagal sync ke guild {guild.name}: {e}")
+
         # Jika DISCORD_CHANNEL_ID disetel di .env, kirim Control Panel otomatis ke channel tersebut
         if CHANNEL_ID and CHANNEL_ID.isdigit():
             try:
