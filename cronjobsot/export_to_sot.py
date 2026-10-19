@@ -257,6 +257,20 @@ def export_dataframe_to_sot(df: pd.DataFrame, owner_filter: str = None) -> tuple
         print("⚠️ Data kosong, tidak ada yang diekspor ke SOT.")
         return False, {"error": "Data kosong"}
 
+    # Bersihkan baris kosong / dummy: harus memiliki setidaknya satu kolom kunci
+    has_app = df["Aplikator"].fillna("").astype(str).str.strip().ne("") if "Aplikator" in df.columns else False
+    has_listing = df["Nama Listing"].fillna("").astype(str).str.strip().ne("") if "Nama Listing" in df.columns else False
+    has_sid = df["Store ID"].fillna("").astype(str).str.strip().ne("") if "Store ID" in df.columns else False
+    has_owner = df["Nama Pemilik"].fillna("").astype(str).str.strip().ne("") if "Nama Pemilik" in df.columns else False
+
+    valid_mask = has_app | has_listing | has_sid | has_owner
+    if isinstance(valid_mask, pd.Series):
+        df = df[valid_mask].copy()
+
+    if df.empty:
+        print("⚠️ Data kosong setelah membuang baris kosong.")
+        return False, {"error": "Semua baris kosong"}
+
     if owner_filter:
         if "Nama Pemilik" in df.columns:
             df = df[df["Nama Pemilik"].astype(str).str.strip().str.lower() == owner_filter.strip().lower()]

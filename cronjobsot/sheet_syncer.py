@@ -135,6 +135,11 @@ def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]
                     val_str = format_grab_food_link(target_ref)
 
             row_vals.append(val_str)
+
+        # Abaikan baris kosong (jika seluruh kolom terisi kosong / tidak ada Store ID, Listing, maupun Aplikator)
+        if not any(v.strip() for v in row_vals):
+            continue
+
         rows.append(row_vals)
 
     return rows

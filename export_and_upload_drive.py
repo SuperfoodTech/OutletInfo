@@ -1418,13 +1418,26 @@ def process_and_combine(owner_filter=None, upload=False, lock_timeout=0):
             print(f"    - ShopeeFood outlets: {len(df_shopee)} baris")
 
             dfs = [df for df in [df_go, df_grab, df_shopee] if not df.empty]
-            if not dfs:
+
+            # Jika master lokal belum lengkap atau owner tertentu tidak ada di master lokal,
+            # gunakan data acuan dari Google Sheet (Vercel/DBR) agar seluruh owner terjangkau
+            df_sheet = load_vercel_data()
+            if not df_sheet.empty:
+                if not dfs:
+                    print(f"    - Google Sheet master: {len(df_sheet)} baris (digunakan sebagai basis)")
+                    combined_df = df_sheet
+                else:
+                    scraped_combined = pd.concat(dfs, ignore_index=True)
+                    scraped_owners = set(scraped_combined["Nama Pemilik"].dropna().astype(str).str.strip().str.lower())
+                    missing_from_scraped = df_sheet[~df_sheet["Nama Pemilik"].fillna("").astype(str).str.strip().str.lower().isin(scraped_owners)]
+                    combined_df = pd.concat([scraped_combined, missing_from_scraped], ignore_index=True)
+                    print(f"    - Gabungan master lokal + sheet: {len(combined_df)} baris ({len(scraped_owners)} owner dari scraping, {len(missing_from_scraped)} baris tambahan dari sheet)")
+            elif dfs:
+                combined_df = pd.concat(dfs, ignore_index=True)
+            else:
                 print("\n❌ Tidak ada data outlet yang ditemukan.")
                 return
 
-            # Gabungkan data seluruh platform
-            combined_df = pd.concat(dfs, ignore_index=True)
-            
             # Filter baris yang memiliki Nama Pemilik
             if "Nama Pemilik" not in combined_df.columns:
                 print("❌ Kolom 'Nama Pemilik' tidak ditemukan dalam data.")
