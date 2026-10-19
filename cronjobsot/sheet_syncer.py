@@ -7,6 +7,7 @@ melalui Google Apps Script Web App (APP_SCRIPT_URL).
 """
 
 import os
+import re
 import json
 import time
 import requests
@@ -78,16 +79,24 @@ def format_grab_food_link(store_id_or_link: str) -> str:
     """
     Format ID Toko atau Link GrabFood ke URL Konsumen GrabFood:
     https://food.grab.com/id/id/restaurant/x/{clean_id}/
-    di mana {clean_id} adalah ID tanpa tanda strip '-'.
+    Untuk store ID yang berawalan 6 (misal 6-C8DAAA4VG3E3LX atau 6C8DAAA4VG3E3LX),
+    tanda strip '6-' selalu dipertahankan/disisipkan.
     """
     if not store_id_or_link:
         return ""
-    val = str(store_id_or_link).strip()
+    val = str(store_id_or_link).strip().strip("()").strip()
     if not val or val.lower() in ('nan', 'none'):
         return ""
     if "grab.com" in val:
-        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
-    clean_id = val.replace("-", "").strip()
+        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1].strip("()").strip()
+
+    # Tangani store ID Grab yang berawalan 6 (misal 6-C8DAAA4VG3E3LX atau tanpa strip 6C8DAAA4VG3E3LX)
+    m6 = re.match(r"^6-?([A-Za-z0-9]{5,})$", val)
+    if m6:
+        clean_id = f"6-{m6.group(1)}"
+    else:
+        clean_id = val.replace("-", "").strip()
+
     if not clean_id:
         return ""
     return f"https://food.grab.com/id/id/restaurant/x/{clean_id}/"
@@ -126,6 +135,14 @@ def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]
             # Bersihkan suffix .0 pada angka/ID panjang
             if val_str.endswith(".0") and val_str[:-2].isdigit():
                 val_str = val_str[:-2]
+
+            # Normalisasi kolom Store ID untuk GrabFood jika berawalan 6 tapi tanpa strip
+            if h == 'Store ID':
+                app_val = str(r.get('Aplikator') or r.get('Aplikasi') or '').strip().lower()
+                if 'grab' in app_val:
+                    m6 = re.match(r"^6([A-Za-z0-9]{5,})$", val_str.strip().strip("()").strip())
+                    if m6:
+                        val_str = f"6-{m6.group(1)}"
 
             # Normalisasi kolom Link untuk GrabFood ke format URL konsumen
             if h == 'Link':

@@ -23,6 +23,7 @@ Penggunaan CLI:
 
 import os
 import sys
+import re
 import io
 import time
 import glob
@@ -176,16 +177,23 @@ def load_dbr_master_data(force_live: bool = False) -> pd.DataFrame:
     if "Status Listing" not in df.columns:
         df["Status Listing"] = "LIVE"
 
-    # Normalisasi link GrabFood ke format: https://food.grab.com/id/id/restaurant/x/{clean_id}/
-    if "Aplikator" in df.columns and "Link" in df.columns:
+    # Normalisasi link dan Store ID GrabFood ke format: https://food.grab.com/id/id/restaurant/x/{clean_id}/
+    if "Aplikator" in df.columns:
         is_grab = df["Aplikator"].astype(str).str.lower().str.contains("grab")
         if is_grab.any():
             if "Store ID" in df.columns:
-                df.loc[is_grab, "Link"] = df[is_grab].apply(
-                    lambda r: format_grab_food_link(r.get("Link") or r.get("Store ID")), axis=1
-                )
-            else:
-                df.loc[is_grab, "Link"] = df.loc[is_grab, "Link"].apply(format_grab_food_link)
+                def _norm_sid(s):
+                    val = str(s or '').strip().strip("()").strip()
+                    m = re.match(r"^6([A-Za-z0-9]{5,})$", val)
+                    return f"6-{m.group(1)}" if m else val
+                df.loc[is_grab, "Store ID"] = df.loc[is_grab, "Store ID"].apply(_norm_sid)
+            if "Link" in df.columns:
+                if "Store ID" in df.columns:
+                    df.loc[is_grab, "Link"] = df[is_grab].apply(
+                        lambda r: format_grab_food_link(r.get("Link") or r.get("Store ID")), axis=1
+                    )
+                else:
+                    df.loc[is_grab, "Link"] = df.loc[is_grab, "Link"].apply(format_grab_food_link)
 
     return df
 
@@ -218,6 +226,12 @@ def load_all_local_masters() -> pd.DataFrame:
         try:
             df_gr = pd.read_excel(str(grab_master), sheet_name="Listing")
             df_gr["Aplikator"] = "GrabFood"
+            if "Store ID" in df_gr.columns:
+                def _norm_sid(s):
+                    val = str(s or '').strip().strip("()").strip()
+                    m = re.match(r"^6([A-Za-z0-9]{5,})$", val)
+                    return f"6-{m.group(1)}" if m else val
+                df_gr["Store ID"] = df_gr["Store ID"].apply(_norm_sid)
             if "Link" in df_gr.columns:
                 sid_col = "Store ID" if "Store ID" in df_gr.columns else "Link"
                 df_gr["Link"] = df_gr.apply(

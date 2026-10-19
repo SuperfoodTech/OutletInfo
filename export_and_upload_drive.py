@@ -18,6 +18,7 @@ Spesifikasi File:
 
 import os
 import sys
+import re
 import glob
 import json
 import base64
@@ -59,16 +60,24 @@ def format_grab_food_link(store_id_or_link: str) -> str:
     """
     Format ID Toko atau Link GrabFood ke URL Konsumen GrabFood:
     https://food.grab.com/id/id/restaurant/x/{clean_id}/
-    di mana {clean_id} adalah ID tanpa tanda strip '-'.
+    Untuk store ID yang berawalan 6 (misal 6-C8DAAA4VG3E3LX atau 6C8DAAA4VG3E3LX),
+    tanda strip '6-' selalu dipertahankan/disisipkan.
     """
     if not store_id_or_link:
         return ""
-    val = str(store_id_or_link).strip()
+    val = str(store_id_or_link).strip().strip("()").strip()
     if not val or val.lower() in ('nan', 'none'):
         return ""
     if "grab.com" in val:
-        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
-    clean_id = val.replace("-", "").strip()
+        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1].strip("()").strip()
+
+    # Tangani store ID Grab yang berawalan 6 (misal 6-C8DAAA4VG3E3LX atau tanpa strip 6C8DAAA4VG3E3LX)
+    m6 = re.match(r"^6-?([A-Za-z0-9]{5,})$", val)
+    if m6:
+        clean_id = f"6-{m6.group(1)}"
+    else:
+        clean_id = val.replace("-", "").strip()
+
     if not clean_id:
         return ""
     return f"https://food.grab.com/id/id/restaurant/x/{clean_id}/"
@@ -199,6 +208,11 @@ def load_grab_data():
     if records:
         combined = pd.concat(records, ignore_index=True)
         if "Store ID" in combined.columns:
+            def _normalize_grab_sid(sid_val):
+                s = str(sid_val or '').strip().strip("()").strip()
+                m6 = re.match(r"^6([A-Za-z0-9]{5,})$", s)
+                return f"6-{m6.group(1)}" if m6 else s
+            combined["Store ID"] = combined["Store ID"].apply(_normalize_grab_sid)
             combined = combined.drop_duplicates(subset=["Store ID"], keep="last")
         if "Link" in combined.columns or "Store ID" in combined.columns:
             def _normalize_grab_link(row):
@@ -368,6 +382,20 @@ def load_vercel_data(force_live=False):
         if "Nama Portal.1" in df.columns:
             df.loc[is_go, "Nama Portal.1"] = ""
 
+        # Normalisasi Store ID dan Link untuk GrabFood agar format '6-' selalu lengkap
+        is_grab = df["Aplikator"].astype(str).str.strip().str.lower().str.contains("grab")
+        if is_grab.any():
+            if "Store ID" in df.columns:
+                def _norm_sid(s):
+                    val = str(s or '').strip().strip("()").strip()
+                    m = re.match(r"^6([A-Za-z0-9]{5,})$", val)
+                    return f"6-{m.group(1)}" if m else val
+                df.loc[is_grab, "Store ID"] = df.loc[is_grab, "Store ID"].apply(_norm_sid)
+            if "Link" in df.columns:
+                df.loc[is_grab, "Link"] = df[is_grab].apply(
+                    lambda r: format_grab_food_link(r.get("Link") or r.get("Store ID")), axis=1
+                )
+
     # Status Listing default LIVE untuk data aktif
     df["Status Listing"] = "LIVE"
 
@@ -424,6 +452,14 @@ def write_data_to_sheet(ws, df, headers):
             # Bersihkan suffix .0 pada angka/nomor panjang
             if val_str.endswith(".0") and val_str[:-2].isdigit():
                 val_str = val_str[:-2]
+
+            # Normalisasi kolom Store ID untuk GrabFood jika berawalan 6 tapi tanpa strip
+            if h == 'Store ID':
+                app_name = str(r.get('Aplikator') or r.get('Aplikasi') or '').strip().lower()
+                if 'grab' in app_name:
+                    m6 = re.match(r"^6([A-Za-z0-9]{5,})$", val_str.strip().strip("()").strip())
+                    if m6:
+                        val_str = f"6-{m6.group(1)}"
 
             # Normalisasi kolom Link untuk GrabFood ke format URL konsumen
             if h == 'Link':

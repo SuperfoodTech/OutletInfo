@@ -54,16 +54,24 @@ def format_grab_food_link(store_id_or_link: str) -> str:
     """
     Format ID Toko atau Link GrabFood ke URL Konsumen GrabFood:
     https://food.grab.com/id/id/restaurant/x/{clean_id}/
-    di mana {clean_id} adalah ID tanpa tanda strip '-'.
+    Untuk store ID yang berawalan 6 (misal 6-C8DAAA4VG3E3LX atau 6C8DAAA4VG3E3LX),
+    tanda strip '6-' selalu dipertahankan/disisipkan.
     """
     if not store_id_or_link:
         return ""
-    val = str(store_id_or_link).strip()
+    val = str(store_id_or_link).strip().strip("()").strip()
     if not val or val.lower() in ('nan', 'none'):
         return ""
     if "grab.com" in val:
-        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
-    clean_id = val.replace("-", "").strip()
+        val = val.split("?")[0].split("#")[0].rstrip("/").split("/")[-1].strip("()").strip()
+
+    # Tangani store ID Grab yang berawalan 6 (misal 6-C8DAAA4VG3E3LX atau tanpa strip 6C8DAAA4VG3E3LX)
+    m6 = re.match(r"^6-?([A-Za-z0-9]{5,})$", val)
+    if m6:
+        clean_id = f"6-{m6.group(1)}"
+    else:
+        clean_id = val.replace("-", "").strip()
+
     if not clean_id:
         return ""
     return f"https://food.grab.com/id/id/restaurant/x/{clean_id}/"
@@ -1223,7 +1231,10 @@ def save_formatted_excel(df, file_path):
         ws.cell(row=idx, column=10, value=str(r.get('Nama Listing') or '') if pd.notna(r.get('Nama Listing')) else '') # J: Nama Listing
         grab_link = format_grab_food_link(r.get('Link') or r.get('Store ID') or '')
         ws.cell(row=idx, column=11, value=grab_link)             # K: Link
-        ws.cell(row=idx, column=12, value=str(r.get('Store ID') or '') if pd.notna(r.get('Store ID')) else '')     # L: Store ID
+        sid_raw = str(r.get('Store ID') or '') if pd.notna(r.get('Store ID')) else ''
+        m6 = re.match(r"^6([A-Za-z0-9]{5,})$", sid_raw.strip().strip("()").strip())
+        sid_clean = f"6-{m6.group(1)}" if m6 else sid_raw
+        ws.cell(row=idx, column=12, value=sid_clean)     # L: Store ID
         ws.cell(row=idx, column=13, value=str(r.get('Status Listing') or '') if pd.notna(r.get('Status Listing')) else '') # M: Status Listing
         ws.cell(row=idx, column=14, value=str(r.get('Alamat') or '') if pd.notna(r.get('Alamat')) else '')         # N: Alamat
         ws.cell(row=idx, column=15, value=str(r.get('Nama Bank') or '') if pd.notna(r.get('Nama Bank')) else '')   # O: Nama Bank
