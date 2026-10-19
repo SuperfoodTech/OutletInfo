@@ -47,6 +47,7 @@ OUTPUT_OWNERS_DIR = BASE_DIR / "output_owners"
 TEMPLATE_PATH = BASE_DIR / "YYYY-MM-DD HH_MM Nama Pemilik.xlsx"
 
 load_dotenv(BASE_DIR / ".env")
+GOOGLE_SHEET_DBR_URL = os.getenv("GOOGLE_SHEET_DBR_URL", "")
 GOOGLE_SHEET_VERCEL_URL = os.getenv(
     "GOOGLE_SHEET_VERCEL_URL",
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vTprbPPf_J5gAVL3PYeHbbdl5ZXQvb17HY2lJGPI2xg13Ly3AGT8eYHLYmU_m1NdtkBVg-qUGv1BoEE/pub?output=csv"
@@ -269,33 +270,42 @@ def load_vercel_data(force_live=False):
         except Exception:
             pass
 
-    # 2. Ambil data live dari Google Sheet jika belum didapat dari cache
+    # 2. Ambil data live dari Google Sheet (prioritas DBR URL, lalu Vercel URL)
     if not csv_text:
-        try:
-            url = GOOGLE_SHEET_VERCEL_URL
-            sep = "&" if "?" in url else "?"
-            url_busted = f"{url}{sep}_cb={int(time.time())}"
-            req = urllib.request.Request(
-                url_busted,
-                headers={
-                    'User-Agent': 'Mozilla/5.0',
-                    'Cache-Control': 'no-cache, no-store, must-revalidate',
-                    'Pragma': 'no-cache'
-                }
-            )
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                downloaded_text = resp.read().decode('utf-8', errors='replace')
-            if downloaded_text.strip():
-                csv_text = downloaded_text
-                print(f"   ✓ [VERCEL] Berhasil memuat data live dari Google Sheet ({len(csv_text)} bytes).")
-                try:
-                    with open(cache_file, "w", encoding="utf-8") as f:
-                        f.write(csv_text)
-                except Exception as ce:
-                    # Gagal simpan cache disk tidak membatalkan data live di memori
-                    print(f"   ℹ️ [CACHE] Cache disk tidak dapat diperbarui ({ce}), tetap memakai data live.")
-        except Exception as e:
-            print(f"⚠️ Fetch live Vercel Sheet melewati batas waktu / offline ({e}). Menggunakan cache lokal.")
+        urls_to_try = []
+        if GOOGLE_SHEET_DBR_URL:
+            urls_to_try.append(("DBR", GOOGLE_SHEET_DBR_URL))
+        if GOOGLE_SHEET_VERCEL_URL:
+            urls_to_try.append(("VERCEL", GOOGLE_SHEET_VERCEL_URL))
+
+        for label, u in urls_to_try:
+            try:
+                url = u.strip()
+                if "/pubhtml" in url:
+                    url = url.replace("/pubhtml", "/pub?output=csv")
+                sep = "&" if "?" in url else "?"
+                url_busted = f"{url}{sep}_cb={int(time.time())}"
+                req = urllib.request.Request(
+                    url_busted,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache'
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    downloaded_text = resp.read().decode('utf-8', errors='replace')
+                if downloaded_text.strip():
+                    csv_text = downloaded_text
+                    print(f"   ✓ [{label}] Berhasil memuat data live dari Google Sheet ({len(csv_text)} bytes).")
+                    try:
+                        with open(cache_file, "w", encoding="utf-8") as f:
+                            f.write(csv_text)
+                    except Exception as ce:
+                        print(f"   ℹ️ [CACHE] Cache disk tidak dapat diperbarui ({ce}), tetap memakai data live.")
+                    break
+            except Exception as e:
+                print(f"⚠️ Fetch live {label} Sheet melewati batas waktu / offline ({e}).")
 
     # 3. Fallback ke file cache lokal jika live gagal
     if not csv_text and cache_file.exists():
