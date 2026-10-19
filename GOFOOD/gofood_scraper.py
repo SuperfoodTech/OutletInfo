@@ -513,7 +513,7 @@ def save_formatted_excel(df, file_path):
         ws.cell(row=idx, column=1, value=str(r.get('Nama Pemilik') or '') if pd.notna(r.get('Nama Pemilik')) else '') # A: Nama Pemilik
         ws.cell(row=idx, column=2, value=str(r.get('Nama Brand') or '') if pd.notna(r.get('Nama Brand')) else '')   # B: Nama Brand
         ws.cell(row=idx, column=7, value=str(r.get('Aplikator') or '') if pd.notna(r.get('Aplikator')) else 'GoFood') # G: Aplikator
-        ws.cell(row=idx, column=8, value=str(r.get('Nama Portal') or '') if pd.notna(r.get('Nama Portal')) else '') # H: Nama Portal
+        ws.cell(row=idx, column=8, value='')                                                                          # H: Nama Portal (Dikosongkan untuk GoFood)
         ws.cell(row=idx, column=9, value=str(r.get('Group ID') or '') if pd.notna(r.get('Group ID')) else '')       # I: Group ID
         ws.cell(row=idx, column=10, value=str(r.get('Nama Listing') or '') if pd.notna(r.get('Nama Listing')) else '') # J: Nama Listing
         ws.cell(row=idx, column=11, value=str(r.get('Link') or '') if pd.notna(r.get('Link')) else '')             # K: Link
@@ -1096,7 +1096,7 @@ def transform_gobiz_hits(hits, owner_name, portal_name, brand_name):
             'Nama Pemilik': owner_name,
             'Nama Brand': brand_name or owner_name,
             'Aplikator': 'GoFood',
-            'Nama Portal': portal_name,
+            'Nama Portal': '',
             'Group ID': group_id,
             'Nama Listing': nama,
             'Link': gofood_link,

@@ -145,6 +145,8 @@ def load_gofood_data():
 
     if records:
         combined = pd.concat(records, ignore_index=True)
+        if "Nama Portal" in combined.columns:
+            combined["Nama Portal"] = ""
         if "Store ID" in combined.columns:
             combined = combined.drop_duplicates(subset=["Store ID"], keep="last")
         return combined
@@ -358,6 +360,14 @@ def load_vercel_data(force_live=False):
             axis=1
         )
 
+    # Untuk GoFood, kosongkan kolom Nama Portal sesuai instruksi
+    if "Aplikator" in df.columns:
+        is_go = df["Aplikator"].astype(str).str.strip().str.lower().str.contains("go")
+        if "Nama Portal" in df.columns:
+            df.loc[is_go, "Nama Portal"] = ""
+        if "Nama Portal.1" in df.columns:
+            df.loc[is_go, "Nama Portal.1"] = ""
+
     # Status Listing default LIVE untuk data aktif
     df["Status Listing"] = "LIVE"
 
@@ -421,6 +431,12 @@ def write_data_to_sheet(ws, df, headers):
                 if 'grab' in app_name:
                     sid = str(r.get('Store ID') or '').strip()
                     val_str = format_grab_food_link(val_str or sid)
+
+            # Kosongkan kolom Nama Portal untuk GoFood sesuai instruksi
+            if h in ('Nama Portal', 'Nama Portal.1'):
+                app_name = str(r.get('Aplikator') or r.get('Aplikasi') or '').strip().lower()
+                if 'go' in app_name:
+                    val_str = ''
 
             cell = ws.cell(row=idx, column=c_idx, value=val_str)
             cell.font = body_font

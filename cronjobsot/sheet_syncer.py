@@ -134,6 +134,12 @@ def format_dataframe_to_rows(df: pd.DataFrame, headers: list[str]) -> list[list]
                     target_ref = val_str or str(r.get('Store ID') or '').strip()
                     val_str = format_grab_food_link(target_ref)
 
+            # Kosongkan kolom Nama Portal untuk GoFood sesuai instruksi
+            if h in ('Nama Portal', 'Nama Portal.1'):
+                app_val = str(r.get('Aplikator') or r.get('Aplikasi') or '').strip().lower()
+                if 'go' in app_val:
+                    val_str = ''
+
             row_vals.append(val_str)
 
         # Abaikan baris kosong (jika seluruh kolom terisi kosong / tidak ada Store ID, Listing, maupun Aplikator)
