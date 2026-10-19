@@ -4,7 +4,7 @@ discord_bot.py
 ==============
 Discord Bot untuk Otomasi Generate & Upload Outlet Info ke Google Drive.
 Fitur:
-- Slash Command `/generate`
+- Slash Command `/listing`
 - Dropdown Pemilihan Aplikator (GoFood / GrabFood / Semua)
 - Dropdown Pemilihan Owner (Otomatis mendeteksi dan menaruh Owner TERBARU di posisi paling atas)
 - Tombol Trigger `🚀 Generate & Upload`
@@ -358,7 +358,7 @@ class GenerateButton(discord.ui.Button):
         try:
             await self.parent_view.start_generation(interaction)
         except (discord.NotFound, discord.HTTPException) as e:
-            print(f"⚠️ [BTN /generate] Interaksi tombol kadaluwarsa ({e}).")
+            print(f"⚠️ [BTN /listing] Interaksi tombol kadaluwarsa ({e}).")
 
 
 class RefreshButton(discord.ui.Button):
@@ -1149,12 +1149,12 @@ class OutletInfoBot(commands.Bot):
         print("=" * 60)
         print(f"🤖 Bot Login Berhasil sebagai: {self.user.name} ({self.user.id})")
         print(f"🌟 Status: Online & Siap Digunakan!")
-        print("   Gunakan perintah Slash: /generate di server Discord Anda.")
+        print("   Gunakan perintah Slash: /listing di server Discord Anda.")
         print("=" * 60)
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="Outlet Info • /generate"
+                name="Outlet Info • /listing"
             )
         )
 
@@ -1196,14 +1196,14 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     print(f"⚠️ [APP COMMAND ERROR] {error}")
 
 
-@bot.tree.command(name="generate", description="🚀 Buka Control Panel untuk Generate & Upload Outlet Info ke Google Drive")
+@bot.tree.command(name="listing", description="🚀 Buka Control Panel untuk Generate & Upload Outlet Info ke Google Drive")
 @app_commands.describe(owner="Nama Owner (opsional: ketik untuk mencari nama owner dari Vercel Sheet)")
-async def generate_slash(interaction: discord.Interaction, owner: str = None):
+async def listing_slash(interaction: discord.Interaction, owner: str = None):
     """Menampilkan Control Panel Interaktif."""
     try:
         await interaction.response.defer()
     except (discord.NotFound, discord.HTTPException) as e:
-        print(f"⚠️ [SLASH /generate] Interaksi tidak dapat di-defer ({e}).")
+        print(f"⚠️ [SLASH /listing] Interaksi tidak dapat di-defer ({e}).")
         return
 
     owners_meta = await get_cached_owners_metadata(force_live=False)
@@ -1212,11 +1212,11 @@ async def generate_slash(interaction: discord.Interaction, owner: str = None):
     try:
         await interaction.followup.send(embed=embed, view=view)
     except (discord.NotFound, discord.HTTPException) as e:
-        print(f"⚠️ [SLASH /generate] Gagal mengirim panel followup ({e}).")
+        print(f"⚠️ [SLASH /listing] Gagal mengirim panel followup ({e}).")
 
 
-@generate_slash.autocomplete("owner")
-async def generate_owner_autocomplete(interaction: discord.Interaction, current: str):
+@listing_slash.autocomplete("owner")
+async def listing_owner_autocomplete(interaction: discord.Interaction, current: str):
     owners = _metadata_cache["owners"]
     if not owners:
         try:
@@ -1290,7 +1290,7 @@ async def status_slash(interaction: discord.Interaction):
 
     embed.add_field(name="📁 Root Google Drive", value=f"[Buka Google Drive]({ROOT_DRIVE_URL})", inline=False)
     
-    embed.set_footer(text="Gunakan /generate untuk mengekspor data.")
+    embed.set_footer(text="Gunakan /listing untuk mengekspor data.")
     try:
         await interaction.followup.send(embed=embed)
     except (discord.NotFound, discord.HTTPException) as e:
