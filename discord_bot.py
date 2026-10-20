@@ -29,8 +29,8 @@ from discord.ext import commands
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
-BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
-CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "").strip()
+BOT_TOKEN = (os.getenv("DISCORD_BOT_TOKEN_LISTING") or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
+CHANNEL_ID = (os.getenv("DISCORD_CHANNEL_ID_LISTING") or os.getenv("DISCORD_CHANNEL_ID", "")).strip()
 ROOT_DRIVE_URL = "https://drive.google.com/drive/u/0/folders/19VIrypPcBmNNbjDLGS7kxp_yIdBBwXjB"
 
 # Import helper dari export_and_upload_drive & pipeline_lock
@@ -1149,12 +1149,12 @@ class OutletInfoBot(commands.Bot):
         print("=" * 60)
         print(f"🤖 Bot Login Berhasil sebagai: {self.user.name} ({self.user.id})")
         print(f"🌟 Status: Online & Siap Digunakan!")
-        print("   Gunakan perintah Slash: /generate di server Discord Anda.")
+        print("   Gunakan perintah Slash: /listing (atau /generate) di server Discord Anda.")
         print("=" * 60)
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="Outlet Info • /generate"
+                name="Outlet Info • /listing"
             )
         )
 
@@ -1196,14 +1196,25 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     print(f"⚠️ [APP COMMAND ERROR] {error}")
 
 
-@bot.tree.command(name="generate", description="🚀 Buka Control Panel untuk Generate & Upload Outlet Info ke Google Drive")
+@bot.tree.command(name="listing", description="🚀 Buka Control Panel untuk Generate & Upload Outlet Info ke Google Drive")
+@app_commands.describe(owner="Nama Owner (opsional: ketik untuk mencari nama owner dari Vercel Sheet)")
+async def listing_slash(interaction: discord.Interaction, owner: str = None):
+    """Menampilkan Control Panel Interaktif."""
+    await _display_control_panel(interaction, owner, cmd_name="listing")
+
+
+@bot.tree.command(name="generate", description="🚀 (Alias /listing) Buka Control Panel Generate & Upload Outlet Info")
 @app_commands.describe(owner="Nama Owner (opsional: ketik untuk mencari nama owner dari Vercel Sheet)")
 async def generate_slash(interaction: discord.Interaction, owner: str = None):
-    """Menampilkan Control Panel Interaktif."""
+    """Menampilkan Control Panel Interaktif (Alias)."""
+    await _display_control_panel(interaction, owner, cmd_name="generate")
+
+
+async def _display_control_panel(interaction: discord.Interaction, owner: str = None, cmd_name: str = "listing"):
     try:
         await interaction.response.defer()
     except (discord.NotFound, discord.HTTPException) as e:
-        print(f"⚠️ [SLASH /generate] Interaksi tidak dapat di-defer ({e}).")
+        print(f"⚠️ [SLASH /{cmd_name}] Interaksi tidak dapat di-defer ({e}).")
         return
 
     owners_meta = await get_cached_owners_metadata(force_live=False)
@@ -1212,9 +1223,10 @@ async def generate_slash(interaction: discord.Interaction, owner: str = None):
     try:
         await interaction.followup.send(embed=embed, view=view)
     except (discord.NotFound, discord.HTTPException) as e:
-        print(f"⚠️ [SLASH /generate] Gagal mengirim panel followup ({e}).")
+        print(f"⚠️ [SLASH /{cmd_name}] Gagal mengirim panel followup ({e}).")
 
 
+@listing_slash.autocomplete("owner")
 @generate_slash.autocomplete("owner")
 async def generate_owner_autocomplete(interaction: discord.Interaction, current: str):
     owners = _metadata_cache["owners"]
