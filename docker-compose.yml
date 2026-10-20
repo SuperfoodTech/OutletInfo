@@ -21,6 +21,7 @@ services:
       - ./GOFOOD/session:/app/GOFOOD/session
       - ./output_owners:/app/output_owners
       - ./cronjobsot/reports:/app/cronjobsot/reports
+      - ./cronjobsot/cache:/app/cronjobsot/cache
       - ./cache:/app/cache
 
   bot-sot:
@@ -29,14 +30,23 @@ services:
     command: python bot_sot.py
     restart: unless-stopped
     network_mode: host
-    shm_size: '512m'
-    mem_limit: 800m
+    shm_size: '1gb'
+    mem_limit: 1800m
     environment:
       - PYTHONUNBUFFERED=1
+      - HEADLESS=true
+      - HEADLESS_GOFOOD=true
+      - HEADLESS_GRAB=true
+      - HEADLESS_SHOPEE=true
     volumes:
       - ./.env:/app/.env:ro
+      - ./SHOPEE/data:/app/SHOPEE/data
+      - ./SHOPEE/credentials.json:/app/SHOPEE/credentials.json
+      - ./GRAB/sessions:/app/GRAB/sessions
+      - ./GOFOOD/session:/app/GOFOOD/session
       - ./output_owners:/app/output_owners
       - ./cronjobsot/reports:/app/cronjobsot/reports
+      - ./cronjobsot/cache:/app/cronjobsot/cache
       - ./cache:/app/cache
 
   # Alias 'bot' tetap ada untuk kompatibilitas script lama
@@ -62,6 +72,7 @@ services:
       - ./GOFOOD/session:/app/GOFOOD/session
       - ./output_owners:/app/output_owners
       - ./cronjobsot/reports:/app/cronjobsot/reports
+      - ./cronjobsot/cache:/app/cronjobsot/cache
       - ./cache:/app/cache
 
   weekly-sync:
@@ -86,6 +97,7 @@ services:
       - ./GOFOOD/session:/app/GOFOOD/session
       - ./output_owners:/app/output_owners
       - ./cronjobsot/reports:/app/cronjobsot/reports
+      - ./cronjobsot/cache:/app/cronjobsot/cache
       - ./cache:/app/cache
 
   cli:
