@@ -52,8 +52,8 @@ if str(CRON_DIR) not in sys.path:
 
 load_dotenv(BASE_DIR / ".env")
 
-BOT_TOKEN = (os.getenv("DISCORD_BOT_TOKEN_SOT") or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
-CHANNEL_ID = (os.getenv("DISCORD_CHANNEL_ID_SOT") or "").strip()
+BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN_SOT", "").strip()
+CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID_SOT", "").strip()
 ROOT_DRIVE_URL = "https://drive.google.com/drive/u/0/folders/19VIrypPcBmNNbjDLGS7kxp_yIdBBwXjB"
 
 # Import helper dari export_to_sot & pipeline_lock
@@ -955,3 +955,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
