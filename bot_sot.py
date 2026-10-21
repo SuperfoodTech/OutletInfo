@@ -740,13 +740,6 @@ class SOTBot(commands.Bot):
         print(f"🎯 Target Sheet: Tab '{TARGET_SHEET_NAME}' ({SOT_SPREADSHEET_URL})")
         print("=" * 60)
 
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="Spreadsheet SOT • /sot"
-            )
-        )
-
         # Jika DISCORD_CHANNEL_ID_SOT disetel, kirim panel awal ke channel tersebut
         if CHANNEL_ID and CHANNEL_ID.isdigit():
             try:

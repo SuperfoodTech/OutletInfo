@@ -15,13 +15,16 @@ services:
       - HEADLESS_SHOPEE=true
     volumes:
       - ./.env:/app/.env:ro
-      - ./SHOPEE/data:/app/SHOPEE/data
-      - ./SHOPEE/credentials.json:/app/SHOPEE/credentials.json
-      - ./GRAB/sessions:/app/GRAB/sessions
-      - ./GOFOOD/session:/app/GOFOOD/session
+      - ./export_and_upload_drive.py:/app/export_and_upload_drive.py
+      - ./discord_bot.py:/app/discord_bot.py
+      - ./bot_listing.py:/app/bot_listing.py
+      - ./bot_sot.py:/app/bot_sot.py
+      - ./pipeline_lock.py:/app/pipeline_lock.py
+      - ./GOFOOD:/app/GOFOOD
+      - ./GRAB:/app/GRAB
+      - ./SHOPEE:/app/SHOPEE
+      - ./cronjobsot:/app/cronjobsot
       - ./output_owners:/app/output_owners
-      - ./cronjobsot/reports:/app/cronjobsot/reports
-      - ./cronjobsot/cache:/app/cronjobsot/cache
       - ./cache:/app/cache
 
   bot-sot:
@@ -40,13 +43,16 @@ services:
       - HEADLESS_SHOPEE=true
     volumes:
       - ./.env:/app/.env:ro
-      - ./SHOPEE/data:/app/SHOPEE/data
-      - ./SHOPEE/credentials.json:/app/SHOPEE/credentials.json
-      - ./GRAB/sessions:/app/GRAB/sessions
-      - ./GOFOOD/session:/app/GOFOOD/session
+      - ./export_and_upload_drive.py:/app/export_and_upload_drive.py
+      - ./discord_bot.py:/app/discord_bot.py
+      - ./bot_listing.py:/app/bot_listing.py
+      - ./bot_sot.py:/app/bot_sot.py
+      - ./pipeline_lock.py:/app/pipeline_lock.py
+      - ./GOFOOD:/app/GOFOOD
+      - ./GRAB:/app/GRAB
+      - ./SHOPEE:/app/SHOPEE
+      - ./cronjobsot:/app/cronjobsot
       - ./output_owners:/app/output_owners
-      - ./cronjobsot/reports:/app/cronjobsot/reports
-      - ./cronjobsot/cache:/app/cronjobsot/cache
       - ./cache:/app/cache
 
   # Alias 'bot' tetap ada untuk kompatibilitas script lama
@@ -66,13 +72,16 @@ services:
       - HEADLESS_SHOPEE=true
     volumes:
       - ./.env:/app/.env:ro
-      - ./SHOPEE/data:/app/SHOPEE/data
-      - ./SHOPEE/credentials.json:/app/SHOPEE/credentials.json
-      - ./GRAB/sessions:/app/GRAB/sessions
-      - ./GOFOOD/session:/app/GOFOOD/session
+      - ./export_and_upload_drive.py:/app/export_and_upload_drive.py
+      - ./discord_bot.py:/app/discord_bot.py
+      - ./bot_listing.py:/app/bot_listing.py
+      - ./bot_sot.py:/app/bot_sot.py
+      - ./pipeline_lock.py:/app/pipeline_lock.py
+      - ./GOFOOD:/app/GOFOOD
+      - ./GRAB:/app/GRAB
+      - ./SHOPEE:/app/SHOPEE
+      - ./cronjobsot:/app/cronjobsot
       - ./output_owners:/app/output_owners
-      - ./cronjobsot/reports:/app/cronjobsot/reports
-      - ./cronjobsot/cache:/app/cronjobsot/cache
       - ./cache:/app/cache
 
   weekly-sync:
@@ -91,13 +100,16 @@ services:
       - HEADLESS_SHOPEE=true
     volumes:
       - ./.env:/app/.env:ro
-      - ./SHOPEE/data:/app/SHOPEE/data
-      - ./SHOPEE/credentials.json:/app/SHOPEE/credentials.json
-      - ./GRAB/sessions:/app/GRAB/sessions
-      - ./GOFOOD/session:/app/GOFOOD/session
+      - ./export_and_upload_drive.py:/app/export_and_upload_drive.py
+      - ./discord_bot.py:/app/discord_bot.py
+      - ./bot_listing.py:/app/bot_listing.py
+      - ./bot_sot.py:/app/bot_sot.py
+      - ./pipeline_lock.py:/app/pipeline_lock.py
+      - ./GOFOOD:/app/GOFOOD
+      - ./GRAB:/app/GRAB
+      - ./SHOPEE:/app/SHOPEE
+      - ./cronjobsot:/app/cronjobsot
       - ./output_owners:/app/output_owners
-      - ./cronjobsot/reports:/app/cronjobsot/reports
-      - ./cronjobsot/cache:/app/cronjobsot/cache
       - ./cache:/app/cache
 
   cli:

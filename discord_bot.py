@@ -1151,12 +1151,6 @@ class OutletInfoBot(commands.Bot):
         print(f"🌟 Status: Online & Siap Digunakan!")
         print("   Gunakan perintah Slash: /listing (atau /generate) di server Discord Anda.")
         print("=" * 60)
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="Outlet Info • /listing"
-            )
-        )
 
         # Jika DISCORD_CHANNEL_ID disetel di .env, kirim Control Panel otomatis ke channel tersebut
         if CHANNEL_ID and CHANNEL_ID.isdigit():
