@@ -1,12 +1,13 @@
 services:
-  bot-listing:
+  # Layanan Bot Utama: Menjalankan Bot Listing (/listing) & Bot SOT (/sot) dalam 1 Container Tunggal
+  bot:
     build: .
-    container_name: outlet-info-bot-listing
-    command: python bot_listing.py
+    container_name: outlet-info-bot
+    command: python bot_unified.py
     restart: unless-stopped
     network_mode: host
     shm_size: '1gb'
-    mem_limit: 1800m
+    mem_limit: 1500m
     environment:
       - PYTHONUNBUFFERED=1
       - HEADLESS=true
@@ -19,6 +20,37 @@ services:
       - ./discord_bot.py:/app/discord_bot.py
       - ./bot_listing.py:/app/bot_listing.py
       - ./bot_sot.py:/app/bot_sot.py
+      - ./bot_unified.py:/app/bot_unified.py
+      - ./pipeline_lock.py:/app/pipeline_lock.py
+      - ./GOFOOD:/app/GOFOOD
+      - ./GRAB:/app/GRAB
+      - ./SHOPEE:/app/SHOPEE
+      - ./cronjobsot:/app/cronjobsot
+      - ./output_owners:/app/output_owners
+      - ./cache:/app/cache
+
+  # Service individu di bawah ini disetel restart: "no" untuk mencegah OOM ganda.
+  bot-listing:
+    build: .
+    container_name: outlet-info-bot-listing
+    command: python bot_listing.py
+    restart: "no"
+    network_mode: host
+    shm_size: '1gb'
+    mem_limit: 1500m
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HEADLESS=true
+      - HEADLESS_GOFOOD=true
+      - HEADLESS_GRAB=true
+      - HEADLESS_SHOPEE=true
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./export_and_upload_drive.py:/app/export_and_upload_drive.py
+      - ./discord_bot.py:/app/discord_bot.py
+      - ./bot_listing.py:/app/bot_listing.py
+      - ./bot_sot.py:/app/bot_sot.py
+      - ./bot_unified.py:/app/bot_unified.py
       - ./pipeline_lock.py:/app/pipeline_lock.py
       - ./GOFOOD:/app/GOFOOD
       - ./GRAB:/app/GRAB
@@ -31,39 +63,10 @@ services:
     build: .
     container_name: outlet-info-bot-sot
     command: python bot_sot.py
-    restart: unless-stopped
-    network_mode: host
-    shm_size: '1gb'
-    mem_limit: 1800m
-    environment:
-      - PYTHONUNBUFFERED=1
-      - HEADLESS=true
-      - HEADLESS_GOFOOD=true
-      - HEADLESS_GRAB=true
-      - HEADLESS_SHOPEE=true
-    volumes:
-      - ./.env:/app/.env:ro
-      - ./export_and_upload_drive.py:/app/export_and_upload_drive.py
-      - ./discord_bot.py:/app/discord_bot.py
-      - ./bot_listing.py:/app/bot_listing.py
-      - ./bot_sot.py:/app/bot_sot.py
-      - ./pipeline_lock.py:/app/pipeline_lock.py
-      - ./GOFOOD:/app/GOFOOD
-      - ./GRAB:/app/GRAB
-      - ./SHOPEE:/app/SHOPEE
-      - ./cronjobsot:/app/cronjobsot
-      - ./output_owners:/app/output_owners
-      - ./cache:/app/cache
-
-  # Alias 'bot' tetap ada untuk kompatibilitas script lama
-  bot:
-    build: .
-    container_name: outlet-info-bot
-    command: python bot_listing.py
     restart: "no"
     network_mode: host
     shm_size: '1gb'
-    mem_limit: 1800m
+    mem_limit: 1500m
     environment:
       - PYTHONUNBUFFERED=1
       - HEADLESS=true
@@ -76,6 +79,7 @@ services:
       - ./discord_bot.py:/app/discord_bot.py
       - ./bot_listing.py:/app/bot_listing.py
       - ./bot_sot.py:/app/bot_sot.py
+      - ./bot_unified.py:/app/bot_unified.py
       - ./pipeline_lock.py:/app/pipeline_lock.py
       - ./GOFOOD:/app/GOFOOD
       - ./GRAB:/app/GRAB
