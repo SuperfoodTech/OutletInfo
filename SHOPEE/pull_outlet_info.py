@@ -1579,20 +1579,35 @@ def run_pull(
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         excel_path = OUTPUT_DIR / f"Shopee_{timestamp}.xlsx"
 
-    default_headers = [
-        "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
-        "Aplikator", "Nama Portal", "Group ID", "Nama Listing", "Link", "Store ID", "Status Listing", "Alamat",
-        "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
-        "Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi", "Nama Portal.1",
-        "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
-        "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
-        "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
-        "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
-        "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif"
-    ]
-
     import openpyxl
     from openpyxl.utils import get_column_letter
+
+    template_path = BASE_DIR / "YYYY-MM-DD HH_MM Nama Pemilik.xlsx"
+    default_headers = []
+    if template_path.exists():
+        try:
+            wb_tpl = openpyxl.load_workbook(str(template_path), read_only=True)
+            ws_tpl = wb_tpl['Listing'] if 'Listing' in wb_tpl.sheetnames else wb_tpl.active
+            for cell in next(ws_tpl.iter_rows(min_row=1, max_row=1)):
+                if cell.value is not None and str(cell.value).strip():
+                    default_headers.append(str(cell.value).strip())
+                else:
+                    break
+        except Exception:
+            pass
+
+    if not default_headers:
+        default_headers = [
+            "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
+            "Aplikator", "Group ID", "Nama Listing", "Link", "Store ID", "Status Listing", "Alamat",
+            "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
+            "Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi", "Nama Portal",
+            "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
+            "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
+            "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
+            "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
+            "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif"
+        ]
 
     wb = openpyxl.Workbook()
     font_header = Font(name="Calibri", size=11, bold=True)
@@ -1606,30 +1621,29 @@ def run_pull(
             cell.font = font_header
             cell.alignment = align_left
 
-        # Populate rows with mapping to Kolom A, B, dan G sampai Q (13 kolom terisi)
+        # Populate rows with mapping to Kolom A, B, dan G sampai P (12 kolom terisi)
         for row_idx, r in enumerate(standardized_results, start=2):
             ws_target.cell(row=row_idx, column=1, value=str(r.get("Nama Pemilik") or ""))      # A: Nama Pemilik
             ws_target.cell(row=row_idx, column=2, value=str(r.get("Nama Brand") or ""))        # B: Nama Brand
             ws_target.cell(row=row_idx, column=7, value=str(r.get("Aplikator") or "ShopeeFood")) # G: Aplikator
-            ws_target.cell(row=row_idx, column=8, value=str(r.get("Nama Portal") or ""))     # H: Nama Portal
-            ws_target.cell(row=row_idx, column=9, value=str(r.get("Group ID") or ""))        # I: Group ID
-            ws_target.cell(row=row_idx, column=10, value=str(r.get("Nama Listing") or ""))   # J: Nama Listing
-            ws_target.cell(row=row_idx, column=11, value=str(r.get("Link") or ""))           # K: Link
-            ws_target.cell(row=row_idx, column=12, value=str(r.get("Store ID") or ""))       # L: Store ID
-            ws_target.cell(row=row_idx, column=13, value=str(r.get("Status Listing") or "")) # M: Status Listing
-            ws_target.cell(row=row_idx, column=14, value=str(r.get("Alamat") or ""))         # N: Alamat
-            ws_target.cell(row=row_idx, column=15, value=str(r.get("Nama Bank") or ""))       # O: Nama Bank
-            ws_target.cell(row=row_idx, column=16, value=str(r.get("Nama Pemilik Rekening") or "")) # P: Nama Pemilik Rekening
-            c_rek = ws_target.cell(row=row_idx, column=17, value=str(r.get("Nomor Rekening") or "")) # Q: Nomor Rekening
+            ws_target.cell(row=row_idx, column=8, value=str(r.get("Group ID") or ""))        # H: Group ID
+            ws_target.cell(row=row_idx, column=9, value=str(r.get("Nama Listing") or ""))   # I: Nama Listing
+            ws_target.cell(row=row_idx, column=10, value=str(r.get("Link") or ""))           # J: Link
+            ws_target.cell(row=row_idx, column=11, value=str(r.get("Store ID") or ""))       # K: Store ID
+            ws_target.cell(row=row_idx, column=12, value=str(r.get("Status Listing") or "")) # L: Status Listing
+            ws_target.cell(row=row_idx, column=13, value=str(r.get("Alamat") or ""))         # M: Alamat
+            ws_target.cell(row=row_idx, column=14, value=str(r.get("Nama Bank") or ""))       # N: Nama Bank
+            ws_target.cell(row=row_idx, column=15, value=str(r.get("Nama Pemilik Rekening") or "")) # O: Nama Pemilik Rekening
+            c_rek = ws_target.cell(row=row_idx, column=16, value=str(r.get("Nomor Rekening") or "")) # P: Nomor Rekening
             c_rek.number_format = '@'
 
-            for col in range(1, 18):
+            for col in range(1, 17):
                 cell = ws_target.cell(row=row_idx, column=col)
                 cell.font = font_body
                 cell.alignment = align_left
 
         # Auto-adjust column widths
-        for col_idx in range(1, 18):
+        for col_idx in range(1, 17):
             col_letter = get_column_letter(col_idx)
             max_len = max((len(str(ws_target.cell(row=rw, column=col_idx).value or '')) for rw in range(1, len(standardized_results) + 2)), default=0)
             ws_target.column_dimensions[col_letter].width = min(max(max_len + 4, 12), 60)

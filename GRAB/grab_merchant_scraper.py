@@ -1197,10 +1197,16 @@ def get_template_headers():
         try:
             wb = openpyxl.load_workbook(template_path, read_only=True)
             ws = wb['Listing'] if 'Listing' in wb.sheetnames else wb.active
-            return [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+            headers = []
+            for cell in next(ws.iter_rows(min_row=1, max_row=1)):
+                if cell.value is not None and str(cell.value).strip():
+                    headers.append(str(cell.value).strip())
+                else:
+                    break
+            return headers
         except Exception:
             pass
-    return ['Nama Pemilik', 'Nama Brand', 'Model', 'Tipe', 'Outlet', 'Nomor HP', 'Aplikator', 'Nama Portal', 'Group ID', 'Nama Listing', 'Link', 'Store ID', 'Status Listing', 'Alamat', 'Nama Bank', 'Nama Pemilik Rekening', 'Nomor Rekening']
+    return ['Nama Pemilik', 'Nama Brand', 'Model', 'Tipe', 'Outlet', 'Nomor HP', 'Aplikator', 'Group ID', 'Nama Listing', 'Link', 'Store ID', 'Status Listing', 'Alamat', 'Nama Bank', 'Nama Pemilik Rekening', 'Nomor Rekening']
 
 
 def save_formatted_excel(df, file_path):
@@ -1226,30 +1232,29 @@ def save_formatted_excel(df, file_path):
         ws.cell(row=idx, column=1, value=str(r.get('Nama Pemilik') or '') if pd.notna(r.get('Nama Pemilik')) else '') # A: Nama Pemilik
         ws.cell(row=idx, column=2, value=str(r.get('Nama Brand') or '') if pd.notna(r.get('Nama Brand')) else '')   # B: Nama Brand
         ws.cell(row=idx, column=7, value=str(r.get('Aplikator') or '') if pd.notna(r.get('Aplikator')) else 'GrabFood') # G: Aplikator
-        ws.cell(row=idx, column=8, value=str(r.get('Nama Portal') or '') if pd.notna(r.get('Nama Portal')) else '') # H: Nama Portal
-        ws.cell(row=idx, column=9, value=str(r.get('Group ID') or '') if pd.notna(r.get('Group ID')) else '')       # I: Group ID
-        ws.cell(row=idx, column=10, value=str(r.get('Nama Listing') or '') if pd.notna(r.get('Nama Listing')) else '') # J: Nama Listing
+        ws.cell(row=idx, column=8, value=str(r.get('Group ID') or '') if pd.notna(r.get('Group ID')) else '')       # H: Group ID
+        ws.cell(row=idx, column=9, value=str(r.get('Nama Listing') or '') if pd.notna(r.get('Nama Listing')) else '') # I: Nama Listing
         grab_link = format_grab_food_link(r.get('Link') or r.get('Store ID') or '')
-        ws.cell(row=idx, column=11, value=grab_link)             # K: Link
+        ws.cell(row=idx, column=10, value=grab_link)             # J: Link
         sid_raw = str(r.get('Store ID') or '') if pd.notna(r.get('Store ID')) else ''
         m6 = re.match(r"^6([A-Za-z0-9]{5,})$", sid_raw.strip().strip("()").strip())
         sid_clean = f"6-{m6.group(1)}" if m6 else sid_raw
-        ws.cell(row=idx, column=12, value=sid_clean)     # L: Store ID
-        ws.cell(row=idx, column=13, value=str(r.get('Status Listing') or '') if pd.notna(r.get('Status Listing')) else '') # M: Status Listing
-        ws.cell(row=idx, column=14, value=str(r.get('Alamat') or '') if pd.notna(r.get('Alamat')) else '')         # N: Alamat
-        ws.cell(row=idx, column=15, value=str(r.get('Nama Bank') or '') if pd.notna(r.get('Nama Bank')) else '')   # O: Nama Bank
-        ws.cell(row=idx, column=16, value=str(r.get('Nama Pemilik Rekening') or '') if pd.notna(r.get('Nama Pemilik Rekening')) else '') # P: Nama Pemilik Rekening
+        ws.cell(row=idx, column=11, value=sid_clean)     # K: Store ID
+        ws.cell(row=idx, column=12, value=str(r.get('Status Listing') or '') if pd.notna(r.get('Status Listing')) else '') # L: Status Listing
+        ws.cell(row=idx, column=13, value=str(r.get('Alamat') or '') if pd.notna(r.get('Alamat')) else '')         # M: Alamat
+        ws.cell(row=idx, column=14, value=str(r.get('Nama Bank') or '') if pd.notna(r.get('Nama Bank')) else '')   # N: Nama Bank
+        ws.cell(row=idx, column=15, value=str(r.get('Nama Pemilik Rekening') or '') if pd.notna(r.get('Nama Pemilik Rekening')) else '') # O: Nama Pemilik Rekening
         
-        c_rek = ws.cell(row=idx, column=17, value=str(r.get('Nomor Rekening') or '') if pd.notna(r.get('Nomor Rekening')) else '') # Q: Nomor Rekening
+        c_rek = ws.cell(row=idx, column=16, value=str(r.get('Nomor Rekening') or '') if pd.notna(r.get('Nomor Rekening')) else '') # P: Nomor Rekening
         c_rek.number_format = '@'
 
-        for c in range(1, 18):
+        for c in range(1, 17):
             cell = ws.cell(row=idx, column=c)
             cell.font = font
             cell.alignment = alignment
 
     # Auto adjust column widths
-    for col_idx in range(1, 18):
+    for col_idx in range(1, 17):
         col_letter = openpyxl.utils.get_column_letter(col_idx)
         max_len = max((len(str(ws.cell(row=r, column=col_idx).value or '')) for r in range(1, len(df) + 2)), default=0)
         ws.column_dimensions[col_letter].width = min(max(max_len + 4, 12), 60)

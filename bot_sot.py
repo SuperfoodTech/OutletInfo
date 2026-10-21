@@ -739,6 +739,10 @@ class SOTBot(commands.Bot):
         print(f"🌟 Status: Online & Siap Menangani Perintah /sot & /status_sot!")
         print(f"🎯 Target Sheet: Tab '{TARGET_SHEET_NAME}' ({SOT_SPREADSHEET_URL})")
         print("=" * 60)
+        try:
+            await self.change_presence(activity=None)
+        except Exception:
+            pass
 
         # Jika DISCORD_CHANNEL_ID_SOT disetel, kirim panel awal ke channel tersebut
         if CHANNEL_ID and CHANNEL_ID.isdigit():

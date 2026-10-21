@@ -1149,8 +1149,12 @@ class OutletInfoBot(commands.Bot):
         print("=" * 60)
         print(f"🤖 Bot Login Berhasil sebagai: {self.user.name} ({self.user.id})")
         print(f"🌟 Status: Online & Siap Digunakan!")
-        print("   Gunakan perintah Slash: /listing (atau /generate) di server Discord Anda.")
+        print("   Gunakan perintah Slash: /listing di server Discord Anda.")
         print("=" * 60)
+        try:
+            await self.change_presence(activity=None)
+        except Exception:
+            pass
 
         # Jika DISCORD_CHANNEL_ID disetel di .env, kirim Control Panel otomatis ke channel tersebut
         if CHANNEL_ID and CHANNEL_ID.isdigit():
@@ -1197,13 +1201,6 @@ async def listing_slash(interaction: discord.Interaction, owner: str = None):
     await _display_control_panel(interaction, owner, cmd_name="listing")
 
 
-@bot.tree.command(name="generate", description="🚀 (Alias /listing) Buka Control Panel Generate & Upload Outlet Info")
-@app_commands.describe(owner="Nama Owner (opsional: ketik untuk mencari nama owner dari Vercel Sheet)")
-async def generate_slash(interaction: discord.Interaction, owner: str = None):
-    """Menampilkan Control Panel Interaktif (Alias)."""
-    await _display_control_panel(interaction, owner, cmd_name="generate")
-
-
 async def _display_control_panel(interaction: discord.Interaction, owner: str = None, cmd_name: str = "listing"):
     try:
         await interaction.response.defer()
@@ -1221,7 +1218,6 @@ async def _display_control_panel(interaction: discord.Interaction, owner: str = 
 
 
 @listing_slash.autocomplete("owner")
-@generate_slash.autocomplete("owner")
 async def generate_owner_autocomplete(interaction: discord.Interaction, current: str):
     owners = _metadata_cache["owners"]
     if not owners:

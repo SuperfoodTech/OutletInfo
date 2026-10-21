@@ -7,7 +7,7 @@ serta siap untuk ShopeeFood) ke dalam satu file per-owner:
     YYYY-MM-DD HH_MM [Nama Pemilik].xlsx
 
 Spesifikasi File:
-- Menggunakan template standar 37 kolom (sheet 'Listing').
+- Menggunakan template standar 36 kolom (sheet 'Listing').
 - Memiliki 2 tab (sheet) yang 100% identik:
     Tab 1: 'Listing'
     Tab 2: 'Listing 2'
@@ -84,24 +84,31 @@ def format_grab_food_link(store_id_or_link: str) -> str:
 
 
 def get_template_headers():
-    """Mengambil 37 kolom header resmi dari file template."""
+    """Mengambil kolom header resmi dari file template."""
     if TEMPLATE_PATH.exists():
         try:
             wb = openpyxl.load_workbook(str(TEMPLATE_PATH), read_only=True)
             sheet = wb["Listing"] if "Listing" in wb.sheetnames else wb.active
-            headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+            headers = []
+            for cell in next(sheet.iter_rows(min_row=1, max_row=1)):
+                val = cell.value
+                if val is not None and str(val).strip():
+                    headers.append(str(val).strip())
+                else:
+                    break
             wb.close()
-            return headers
+            if headers:
+                return headers
         except Exception as e:
-            print(f"⚠️ Gagal membaca template ({e}), menggunakan default 37 header.")
+            print(f"⚠️ Gagal membaca template ({e}), menggunakan default header.")
             
-    # Fallback default 37 kolom jika template tidak terbaca
+    # Fallback default 36 kolom jika template tidak terbaca (setelah kolom ke-8 Nama Portal dihapus)
     return [
         'Nama Pemilik', 'Nama Brand', 'Model', 'Tipe', 'Outlet', 'Nomor HP',
-        'Aplikator', 'Nama Portal', 'Group ID', 'Nama Listing', 'Link', 'Store ID',
+        'Aplikator', 'Group ID', 'Nama Listing', 'Link', 'Store ID',
         'Status Listing', 'Alamat', 'Nama Bank', 'Nama Pemilik Rekening', 'Nomor Rekening',
         'Nama Akses', 'Email FoodMaster1', 'Email FoodMaster2', 'Nama Pengguna',
-        'Kata Sandi', 'Nama Portal.1', 'S Nomor HP Akses Pemilik', 'S Username Akses Pemilik',
+        'Kata Sandi', 'Nama Portal', 'S Nomor HP Akses Pemilik', 'S Username Akses Pemilik',
         'S Kata Sandi Akses Pemilik', 'S Allvbadmin Username Akses Staff',
         'S Allvbadmin Kata Sandi Akses Staff', 'S Bot Username Akses Staff',
         'S Bot Kata Sandi Akses Staff', 'S BD Username Akses Staff',
@@ -470,7 +477,7 @@ def write_data_to_sheet(ws, df, headers):
             cell = ws.cell(row=idx, column=c_idx, value=val_str)
             cell.font = body_font
             cell.alignment = alignment
-            if h in text_cols or c_idx in (6, 9, 12, 17, 24):
+            if h in text_cols or c_idx in (6, 8, 11, 16, 23):
                 cell.number_format = '@'
 
 
@@ -1198,7 +1205,7 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                 log(100, "🛑 Pipeline dibatalkan sebelum memulai.")
                 return {"success": False, "error": "CANCELLED", "message": "Dibatalkan oleh pengguna."}
 
-            log(10, "Inisialisasi direktori dan template 37 kolom...")
+            log(10, "Inisialisasi direktori dan template listing...")
             headers = get_template_headers()
             OUTPUT_OWNERS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1316,7 +1323,7 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                                 row_dict["Nama Outlet"] = nama_outlet_val
                                 row_dict["Nama Brand"] = nama_outlet_val
                             for col in ["Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
-                                        "Nama Portal.1", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
+                                        "Nama Portal", "Nama Portal.1", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
                                         "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
                                         "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
                                         "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff", "BD", "Status Internal"]:
