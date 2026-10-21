@@ -1461,12 +1461,17 @@ def main():
             target = queue.pop(0)
             portal_name_str = target.get('portal', 'Manual Input')
             owner_name_str = target.get('owner') or ('VB' if source_type == 'vb' else target.get('brand', 'Unknown'))
-            
-            if portal_name_str in completed_portals:
-                continue
-
             emails_to_try = target.get('emails', [target.get('email')])
             out_file = target.get('output')
+
+            target_key = (
+                owner_name_str.strip().lower(),
+                portal_name_str.strip().lower(),
+                tuple(sorted(e.strip().lower() for e in emails_to_try if e))
+            )
+            
+            if target_key in completed_portals:
+                continue
 
             # Cek apakah semua email saat ini tercatat di banned_emails
             active_emails = [e for e in emails_to_try if e not in banned_emails]
@@ -1536,7 +1541,7 @@ def main():
                                 owner_outlets_collected[owner_name_str] = []
                             owner_outlets_collected[owner_name_str].extend(outlets_data)
                             
-                        completed_portals.add(portal_name_str)
+                        completed_portals.add(target_key)
                         fast_path_success = True
                         break
                     else:
@@ -1794,7 +1799,7 @@ def main():
                     print(f"   ⚠️ Terjadi kesalahan saat proses login {current_email}: {e}")
 
             if session_loaded_successfully and access_token:
-                completed_portals.add(portal_name_str)
+                completed_portals.add(target_key)
                 
                 # Ekstraksi cepat menggunakan curl_cffi dengan Chrome TLS impersonation
                 print("   ⚡ [FAST EXTRACTION] Menarik data outlet dari GoBiz API via curl_cffi...")
