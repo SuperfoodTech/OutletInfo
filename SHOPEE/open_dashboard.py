@@ -46,10 +46,11 @@ def custom_add_argument(self, argument):
 Options.add_argument = custom_add_argument
 
 SESSION_FILE = SCRIPT_DIR / "data" / "session.json"
-CREDS_FILE = SCRIPT_DIR / "credentials.json"
+_credentials_path = os.getenv("SHOPEE_CREDENTIALS_FILE", "").strip()
+CREDS_FILE = Path(_credentials_path) if _credentials_path else None
 
 DEFAULT_USERNAME = "allvbadmin"
-DEFAULT_PASSWORD = "Master!00!"
+DEFAULT_PASSWORD = os.getenv("SHOPEE_MASTER_PASSWORD", "")
 
 
 def main():
@@ -61,7 +62,7 @@ def main():
     # Load credentials
     username = DEFAULT_USERNAME
     password = DEFAULT_PASSWORD
-    if CREDS_FILE.exists():
+    if CREDS_FILE and CREDS_FILE.exists():
         try:
             creds = json.loads(CREDS_FILE.read_text())
             username = creds.get("username") or creds.get("shopee_username") or username

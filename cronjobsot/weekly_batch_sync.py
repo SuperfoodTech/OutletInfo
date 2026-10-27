@@ -72,10 +72,12 @@ def send_discord_summary(summary_data: dict):
     success_count = len(summary_data.get("completed_owners", []))
     failed_count = len(summary_data.get("failed_owners", []))
     sheet_res = summary_data.get("sheet_sync", {})
+    sheet_failed = sheet_res.get("status") not in (None, "success")
     duration_str = summary_data.get("duration", "0m")
 
-    status_color = 0x10b981 if failed_count == 0 else (0xf59e0b if success_count > 0 else 0xef4444)
-    status_title = "🎉 [CRON] SINKRONISASI MINGGUAN SELESAI" if failed_count == 0 else "⚠️ [CRON] SINKRONISASI MINGGUAN SELESAI DENGAN CATATAN"
+    has_failure = failed_count > 0 or sheet_failed
+    status_color = 0x10b981 if not has_failure else (0xf59e0b if success_count > 0 else 0xef4444)
+    status_title = "🎉 [CRON] SINKRONISASI MINGGUAN SELESAI" if not has_failure else "⚠️ [CRON] SINKRONISASI MINGGUAN SELESAI DENGAN CATATAN"
 
     failed_desc = ""
     if failed_count > 0:
@@ -228,7 +230,7 @@ def run_weekly_sync(
     print("[*] Memuat daftar owner dari Tab 'DBR' Google Sheet...")
     v_df = load_dbr_master_data()
     if v_df.empty:
-        print("❌ Gagal memuat data Tab DBR / fallback Sheet (koneksi offline dan cache kosong).")
+        print("❌ Gagal memuat data Tab DBR (koneksi offline dan cache kosong).")
         return False
 
     all_owners = sorted(v_df["Nama Pemilik"].dropna().astype(str).str.strip().unique())
@@ -291,31 +293,44 @@ def run_weekly_sync(
             cmd.append("--upload")
 
         sub_start = time.time()
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=BASE_DIR,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            bufsize=1
         )
+        out_lines = []
+        for line in proc.stdout:
+            raw_line = line.rstrip()
+            if not raw_line:
+                continue
+            out_lines.append(raw_line)
+            if len(out_lines) > 50:
+                out_lines.pop(0)
+            if "[SHOPEE]" in raw_line:
+                print(raw_line, flush=True)
+        returncode = proc.wait()
         sub_dur = int(time.time() - sub_start)
 
-        if proc.returncode == 0:
+        if returncode == 0:
             print(f"  ✅ [SUKSES] Owner '{owner}' selesai diproses ({sub_dur}s).")
             cp["completed_owners"].append(owner)
             completed_set.add(owner)
+            cp["failed_owners"] = [item for item in cp.get("failed_owners", []) if item.get("owner") != owner]
         else:
             # Ambil potongan error dari output
-            out_lines = proc.stdout.splitlines()
-            err_snippet = out_lines[-1] if out_lines else f"Exit code {proc.returncode}"
+            err_snippet = out_lines[-1] if out_lines else f"Exit code {returncode}"
             for line in reversed(out_lines[-10:]):
                 if any(k in line.lower() for k in ("error", "exception", "gagal", "timeout")):
                     err_snippet = line.strip()
                     break
-            print(f"  ❌ [GAGAL] Owner '{owner}' keluar dengan kode {proc.returncode}: {err_snippet}")
-            cp["failed_owners"].append({"owner": owner, "reason": err_snippet, "code": proc.returncode})
+            print(f"  ❌ [GAGAL] Owner '{owner}' keluar dengan kode {returncode}: {err_snippet}")
+            cp["failed_owners"] = [item for item in cp.get("failed_owners", []) if item.get("owner") != owner]
+            cp["failed_owners"].append({"owner": owner, "reason": err_snippet, "code": returncode})
 
         # Simpan progres checkpoint setelah setiap owner
         save_checkpoint(today_str, cp)
@@ -333,20 +348,17 @@ def run_weekly_sync(
         print("\n" + "─" * 70)
         print(f"[*] Memulai sinkronisasi seluruh data ke Google Spreadsheet 'SOT'...")
         try:
-            combined_all = load_all_local_masters()
-            if not combined_all.empty:
-                print(f"  ✓ Terkumpul {len(combined_all)} total baris outlet gabungan.")
-                ok_sheet, res_sheet = export_dataframe_to_sot(combined_all)
+            # SOT memakai DBR sebagai sumber payload resmi, bukan hasil gabungan
+            # master lokal atau Vercel. Scraping sebelumnya tetap menghasilkan
+            # Listing/master, tetapi tidak menjadi sumber baris SOT.
+            dbr_df = load_dbr_master_data()
+            if not dbr_df.empty:
+                print(f"  ✓ Terkumpul {len(dbr_df)} baris dari Tab DBR untuk SOT.")
+                ok_sheet, res_sheet = export_dataframe_to_sot(dbr_df)
                 cp["sheet_sync"] = res_sheet if ok_sheet else {"status": "failed", "error": res_sheet.get("error")}
             else:
-                print("  ⚠️ Tidak ada data master lokal, mencoba memuat dari Tab 'DBR'...")
-                dbr_df = load_dbr_master_data()
-                if not dbr_df.empty:
-                    ok_sheet, res_sheet = export_dataframe_to_sot(dbr_df)
-                    cp["sheet_sync"] = res_sheet if ok_sheet else {"status": "failed", "error": res_sheet.get("error")}
-                else:
-                    print("  ⚠️ Tidak ada data outlet yang berhasil dimuat untuk Google Sheet.")
-                    cp["sheet_sync"] = {"status": "skipped", "message": "Data kosong"}
+                print("  ⚠️ Tab DBR kosong/tidak dapat dimuat; sinkronisasi SOT dibatalkan.")
+                cp["sheet_sync"] = {"status": "skipped", "message": "DBR kosong atau tidak tersedia"}
         except Exception as e:
             print(f"  [!] Exception saat sinkronisasi Google Sheet: {e}")
             cp["sheet_sync"] = {"status": "error", "error": str(e)}
@@ -376,7 +388,8 @@ def run_weekly_sync(
 
     # Kirim rekap ke Discord
     send_discord_summary(cp)
-    return len(cp.get("failed_owners", [])) == 0
+    sheet_ok = no_sheet or cp.get("sheet_sync", {}).get("status") == "success"
+    return len(cp.get("failed_owners", [])) == 0 and sheet_ok
 
 
 def main():

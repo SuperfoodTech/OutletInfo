@@ -29,7 +29,8 @@ def get_vb_portals() -> list:
     Falls back to cached JSON if spreadsheet fetch fails.
     """
     import pandas as pd
-    cred_file = Path(__file__).parent / "credentials_vb.json"
+    credentials_path = os.getenv("SHOPEE_VB_CREDENTIALS_FILE", "").strip()
+    cred_file = Path(credentials_path) if credentials_path else Path(__file__).parent / "credentials_vb.json"
     portals = []
     
     # Check config.json for use_local_credentials

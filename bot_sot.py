@@ -489,6 +489,8 @@ async def execute_sot_cronjob(interaction: discord.Interaction, target_owner: st
         if (datetime.datetime.now() - last_update_time).total_seconds() >= 2.0:
             last_update_time = datetime.datetime.now()
             log_text = "\n".join(terminal_lines)
+            # Discord membatasi value embed field hingga 1024 karakter.
+            log_text = log_text[-900:]
             progress_embed.set_field_at(
                 0,
                 name="💻 Terminal Logs",

@@ -6,7 +6,7 @@ Dokumen ini berisi spesifikasi teknis pemetaan **10 Kolom Objective Standard Sup
 
 ## 1. Spesifikasi Template Excel (`YYYY-MM-DD HH_MM Nama Pemilik.xlsx`)
 
-Template standar yang digunakan adalah sheet **`Listing`** pada file [`YYYY-MM-DD HH_MM Nama Pemilik.xlsx`](file:///mnt/DATA/Proyek/Outlet%20Info/YYYY-MM-DD%20HH_MM%20Nama%20Pemilik.xlsx) yang memiliki 37 kolom header.
+Template standar yang digunakan adalah sheet **`Listing`** pada file [`YYYY-MM-DD HH_MM Nama Pemilik.xlsx`](file:///mnt/DATA/Proyek/Outlet%20Info/YYYY-MM-DD%20HH_MM%20Nama%20Pemilik.xlsx) yang memiliki 48 kolom header.
 
 ### 📌 Aturan Pengisian Kolom:
 * **Hanya mengisi Kolom A, B, dan G sampai Q (13 kolom terisi):**
@@ -96,7 +96,7 @@ Template standar yang digunakan adalah sheet **`Listing`** pada file [`YYYY-MM-D
 
 1. **Format File Output:**
    * `0master.xlsx` — Data gabungan seluruh outlet bersih tanpa duplikat.
-   * `YYYY-MM-DD HH_MM [Nama Pemilik].xlsx` — File hasil gabungan per-pemilik (menggunakan template 37 kolom).
+   * `YYYY-MM-DD HH_MM [Nama Pemilik].xlsx` — File hasil gabungan per-pemilik (menggunakan template 48 kolom).
    * `GOFOOD_outlets_[Nama Portal].xlsx` — Cache file hasil scraping per portal.
 2. **Aturan Deduplikasi:**
    * Di tingkat pemilik (*Owner*): Seluruh outlet dari multi-kredensial dideduplikasi berdasarkan `Store ID`.
