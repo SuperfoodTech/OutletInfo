@@ -22,6 +22,8 @@ import re
 import glob
 import json
 import base64
+import hashlib
+import tempfile
 import argparse
 import datetime
 import time
@@ -70,6 +72,30 @@ LISTING_HEADERS = [
     'Akses Kata Sandi', 'Komisi ShopeeFood', 'Biaya Kemasan',
     'Nominal Biaya Kemasan', 'Invite Staff'
 ]
+WEEKLY_RESULT_COLUMNS = [
+    "Nama Pemilik", "Nama Brand", "Aplikator", "Group ID", "Nama Listing", "Link",
+    "Store ID", "Status Listing", "Alamat", "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening",
+]
+
+
+def weekly_sot_rows(df):
+    """Return the small, credential-free subset that is safe to persist for resume/SOT."""
+    if df is None or df.empty:
+        return []
+    rows = []
+    for source in df.to_dict(orient="records"):
+        row = {column: source.get(column, "") for column in WEEKLY_RESULT_COLUMNS}
+        if not row.get("Nama Listing"):
+            row["Nama Listing"] = source.get("Nama Outlet") or source.get("Nama Brand") or ""
+        if not row.get("Aplikator"):
+            row["Aplikator"] = source.get("Aplikasi") or ""
+        for key, value in row.items():
+            if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
+                row[key] = ""
+            elif isinstance(value, str) and value.strip().casefold() in ("nan", "none"):
+                row[key] = ""
+        rows.append(row)
+    return rows
 
 
 def format_grab_food_link(store_id_or_link: str) -> str:
@@ -609,10 +635,13 @@ def get_owners_with_metadata(source="vercel", force_live=False):
     """
     Mengambil daftar owner beserta informasi outlet dan timestamp file terbaru.
     source: 'vercel' (default) menggunakan live CSV Vercel Sheet,
-            'master' menggunakan master lokal.
+            'master' menggunakan master lokal, 'dbr' menggunakan DBR.
     """
     if source == "vercel":
         combined = load_vercel_data(force_live=force_live)
+    elif source == "dbr":
+        from cronjobsot.export_to_sot import load_dbr_master_data
+        combined = load_dbr_master_data(force_live=force_live)
     else:
         df_go = load_gofood_data()
         df_grab = load_grab_data()
@@ -620,7 +649,7 @@ def get_owners_with_metadata(source="vercel", force_live=False):
         dfs = [df for df in [df_go, df_grab, df_shopee] if not df.empty]
         combined = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
     
-    if combined.empty or "Nama Pemilik" not in combined.columns:
+    if source != "dbr" and (combined.empty or "Nama Pemilik" not in combined.columns):
         # Fallback jika Vercel kosong
         df_go = load_gofood_data()
         df_grab = load_grab_data()
@@ -695,13 +724,212 @@ def get_owners_with_metadata(source="vercel", force_live=False):
     return results
 
 
-def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_event=None):
+def _mask_account_label(value):
+    value = str(value or "").strip()
+    if not value:
+        return "(kosong)"
+    if "@" in value:
+        local, domain = value.split("@", 1)
+        return f"{local[:1]}***@{domain}" if local else f"***@{domain}"
+    if len(value) <= 3:
+        return "*" * len(value)
+    return f"{value[:2]}***{value[-1:]}"
+
+
+def _redact_weekly_log(line, redactions=()):
+    safe_line = str(line)
+    for secret, replacement in sorted(redactions, key=lambda item: len(item[0]), reverse=True):
+        if secret:
+            safe_line = safe_line.replace(secret, replacement)
+    safe_line = re.sub(r"(?i)\b(set-cookie|cookie)\s*[:=].*$", r"\1=[REDACTED]", safe_line)
+    safe_line = re.sub(r"(?i)\b(authorization)\s*[:=]\s*(?:bearer|basic)\s+\S+", r"\1: [REDACTED]", safe_line)
+    safe_line = re.sub(r"(?i)\b(bearer)\s+\S+", r"\1 [REDACTED]", safe_line)
+    safe_line = re.sub(r"(?i)\b(access[_ -]?token|refresh[_ -]?token|csrf[_ -]?token)\b(\s*[:=]\s*)([^\s,;]+)", r"\1\2[REDACTED]", safe_line)
+    safe_line = re.sub(
+        r"(?i)\b(password|kata sandi|token|cookie)\b(\s*[:=]\s*)([^\s,;]+)",
+        r"\1\2[REDACTED]",
+        safe_line,
+    )
+    return safe_line
+
+
+def _weekly_owner_targets(dbr_df, owner_name, app_key):
+    """Build portal groups from the one DBR snapshot; credentials stay in memory."""
+    if dbr_df is None or dbr_df.empty or "Nama Pemilik" not in dbr_df.columns:
+        return []
+    owner_rows = dbr_df[
+        dbr_df["Nama Pemilik"].fillna("").astype(str).str.strip().str.casefold()
+        == str(owner_name).strip().casefold()
+    ]
+    if "Aplikator" not in owner_rows.columns:
+        return []
+    app_values = owner_rows["Aplikator"].fillna("").astype(str).str.casefold()
+    if app_key == "gofood":
+        owner_rows = owner_rows[app_values.str.contains("gofood")]
+        portal_col = "Nama Portal"
+        account_cols = ["Email FoodMaster1", "Email FoodMaster2"]
+    elif app_key == "grab":
+        owner_rows = owner_rows[app_values.str.contains("grab")]
+        portal_col = "Nama Portal"
+        account_cols = ["Nama Pengguna"]
+    else:
+        owner_rows = owner_rows[app_values.str.contains("shopee")]
+        portal_col = "Nama Portal"
+        account_cols = []
+
+    targets_by_key = {}
+    for _, row in owner_rows.iterrows():
+        portal = str(row.get(portal_col) or "").strip()
+        if not portal or portal.casefold() in ("nan", "none", "-"):
+            continue
+        accounts = [
+            str(row.get(col) or "").strip()
+            for col in account_cols
+            if str(row.get(col) or "").strip().casefold() not in ("", "nan", "none", "-")
+        ]
+        has_password = any(
+            str(row.get(column) or "").strip().casefold() not in ("", "nan", "none", "-")
+            for column in ("Kata Sandi", "Password", "Akses Kata Sandi")
+        )
+        account = accounts[0] if accounts else (portal if app_key == "shopee" else "")
+        key = (account.casefold(),) if account else ("portal", portal.casefold())
+        if key not in targets_by_key:
+            brand = str(row.get("Nama Brand") or row.get("Nama Outlet") or portal).strip()
+            targets_by_key[key] = {
+                "owner": owner_name,
+                "brand": brand or portal,
+                "portal": portal,
+                "portals": [portal],
+                "account": account,
+                "accounts": accounts,
+                "has_password": has_password,
+                "app": app_key,
+            }
+        else:
+            if portal.casefold() not in {p.casefold() for p in targets_by_key[key]["portals"]}:
+                targets_by_key[key]["portals"].append(portal)
+            targets_by_key[key]["has_password"] = targets_by_key[key]["has_password"] or has_password
+    return list(targets_by_key.values())
+
+
+def _weekly_missing_portals(dbr_df, owner_name):
+    missing = {"gofood": [], "grab": [], "shopee": []}
+    if dbr_df is None or dbr_df.empty or not {"Nama Pemilik", "Aplikator"}.issubset(dbr_df.columns):
+        return missing
+    owner_rows = dbr_df[
+        dbr_df["Nama Pemilik"].fillna("").astype(str).str.strip().str.casefold()
+        == str(owner_name).strip().casefold()
+    ]
+    for _, row in owner_rows.iterrows():
+        app = str(row.get("Aplikator") or "").casefold()
+        app_key = "gofood" if "gofood" in app else "grab" if "grab" in app else "shopee" if "shopee" in app else None
+        portal = str(row.get("Nama Portal") or "").strip()
+        if app_key and (not portal or portal.casefold() in ("nan", "none", "-")):
+            brand = str(row.get("Nama Brand") or row.get("Nama Outlet") or "").strip()
+            if brand not in missing[app_key]:
+                missing[app_key].append(brand or "(Nama Portal kosong)")
+    return missing
+
+
+def _weekly_redactions(dbr_df, owner_name):
+    redactions = []
+    if dbr_df is None or dbr_df.empty or "Nama Pemilik" not in dbr_df.columns:
+        return redactions
+    owner_rows = dbr_df[
+        dbr_df["Nama Pemilik"].fillna("").astype(str).str.strip().str.casefold()
+        == str(owner_name).strip().casefold()
+    ]
+    for column in owner_rows.columns:
+        normalized = str(column).casefold()
+        is_password = "sandi" in normalized or "password" in normalized
+        is_account = any(token in normalized for token in ("email", "username", "pengguna"))
+        if not (is_password or is_account):
+            continue
+        for value in owner_rows[column].dropna().astype(str).unique():
+            value = value.strip()
+            if value.casefold() in ("", "nan", "none", "-"):
+                continue
+            replacement = "[REDACTED]" if is_password else _mask_account_label(value)
+            redactions.append((value, replacement))
+    return redactions
+
+
+def _cache_fingerprints(directory, prefix):
+    fingerprints = {}
+    try:
+        for path in Path(directory).glob(f"{prefix}*.json"):
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                fingerprints[path] = digest
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return fingerprints
+
+
+def _read_changed_portal_caches(directory, prefix, before, owner_name, app_name):
+    changed = []
+    after = _cache_fingerprints(directory, prefix)
+    for path, digest in after.items():
+        if before.get(path) == digest:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            outlets = payload.get("outlets", [])
+            if not isinstance(outlets, list):
+                continue
+            payload_owner = str(payload.get("owner") or owner_name).strip().casefold()
+            if payload_owner != str(owner_name).strip().casefold():
+                continue
+            changed.append({
+                "portal": str(payload.get("portal") or ""),
+                "account": str(payload.get("email") or payload.get("username") or ""),
+                "outlets": [dict(item) for item in outlets if isinstance(item, dict)],
+            })
+        except Exception:
+            continue
+    rows = []
+    for entry in changed:
+        for outlet in entry["outlets"]:
+            row = dict(outlet)
+            row.setdefault("Nama Pemilik", owner_name)
+            row["Aplikator"] = app_name
+            rows.append(row)
+    return changed, rows
+
+
+def _portal_error_context(lines, portal, return_code, allow_unscoped=False):
+    norm = lambda value: re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
+    portal_key = norm(portal)
+    related = [line for line in lines if portal_key and portal_key in norm(line)]
+    if not related and allow_unscoped:
+        related = list(lines)
+    error_lines = [
+        line for line in related
+        if any(word in line.casefold() for word in ("gagal", "error", "exception", "timeout", "tidak berhasil", "kosong"))
+    ]
+    detail = (error_lines or related)[-1] if (error_lines or related) else f"proses scraper berhenti dengan kode {return_code}"
+    lowered = detail.casefold()
+    if any(word in lowered for word in ("login", "autentikasi", "otp", "password", "kata sandi", "sesi")):
+        stage = "autentikasi"
+    elif any(word in lowered for word in ("store", "outlet", "detail", "fetch", "data kosong", "http")):
+        stage = "penarikan detail outlet"
+    else:
+        stage = "scraping"
+    return stage, detail[:400]
+
+
+def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_event=None,
+                          redactions=(), on_line=None, extra_env=None):
     """Menjalankan subprocess dengan streaming output real-time, dukungan pembatalan cepat, dan batas waktu yang aman."""
     import subprocess
     import time
     import signal
     import selectors
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if extra_env:
+        env.update(extra_env)
     try:
         p = subprocess.Popen(
             cmd,
@@ -763,9 +991,12 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_ev
                         break
                     continue
                 
-                line_s = line.strip()
+                line_s = _redact_weekly_log(line.strip(), redactions)
                 if not line_s:
                     continue
+
+                if on_line:
+                    on_line(line_s)
                     
                 # Abaikan garis pembatas dekoratif
                 if line_s.startswith("===") or line_s.startswith("---") or line_s.startswith("───"):
@@ -793,7 +1024,258 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_ev
         return -1
 
 
-def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, retry_targets=None, cancel_event=None):
+def _run_weekly_dbr_scraping(owner_name, dbr_df, progress_cb=None, cancel_event=None):
+    """Scrape every DBR portal once and return only rows written by this run."""
+    python_bin = sys.executable
+    redactions = _weekly_redactions(dbr_df, owner_name)
+    result = {
+        "gofood": None,
+        "grab": None,
+        "shopee": None,
+        "shopee_merchants": {},
+        "detector_warnings": [],
+        "portal_results": [],
+        "live_rows": [],
+    }
+
+    def log(pct, message):
+        if progress_cb:
+            progress_cb(pct, message)
+        print(f"[{pct:>3}%] {message}", flush=True)
+
+    def log_child(pct, app_label, line):
+        if line:
+            log(pct, f"[WEEKLY][{app_label}] {line}")
+
+    def run_platform(app_key, app_label, script_path, cache_dir, cache_prefix, args, targets, pct, timeout):
+        before = _cache_fingerprints(cache_dir, cache_prefix)
+        captured_lines = []
+        for target in targets:
+            for portal in target["portals"]:
+                account_label = _mask_account_label(target.get("account"))
+                log(pct, f"[WEEKLY][PORTAL][START] Owner='{owner_name}' | Aplikator={app_label} | Portal='{portal}' | Akun={account_label}.")
+                log(pct, f"[WEEKLY][PORTAL][AUTH] Memulai autentikasi/pemulihan sesi untuk portal '{portal}'.")
+
+        rc = run_subprocess_stream(
+            [python_bin, "-u", str(script_path), *args],
+            cwd=script_path.parent,
+            keywords=("Store ID", "Berhasil", "Portal", "Login", "autentikasi", "Owner", "OTP", "Filter", "Gagal", "Error", "Exception", "Restricted", "DETEKTOR", "GAGAL_LOGIN", "DATA_KOSONG", "Target", "Sukses", "Outlet", "Merchant"),
+            on_log=lambda line: log_child(pct, app_label, line),
+            timeout_sec=timeout,
+            cancel_event=cancel_event,
+            redactions=redactions,
+            on_line=captured_lines.append,
+        )
+        changed, all_rows = _read_changed_portal_caches(cache_dir, cache_prefix, before, owner_name, app_label)
+        result[app_key] = rc
+
+        for target in targets:
+            matching_entries = []
+            account_set = {str(value).strip().casefold() for value in target.get("accounts", []) if str(value).strip()}
+            portal_keys = [re.sub(r"[^a-z0-9]", "", p.casefold()) for p in target["portals"]]
+            for entry in changed:
+                account_match = bool(account_set and entry["account"].strip().casefold() in account_set)
+                entry_portal_key = re.sub(r"[^a-z0-9]", "", entry["portal"].casefold())
+                portal_match = any(key and (key in entry_portal_key or entry_portal_key in key) for key in portal_keys)
+                if account_match or portal_match:
+                    matching_entries.append(entry)
+
+            target_rows = [row for entry in matching_entries for row in entry["outlets"]]
+            for row in target_rows:
+                if not str(row.get("Nama Pemilik") or "").strip():
+                    row["Nama Pemilik"] = owner_name
+                if not str(row.get("Nama Brand") or "").strip():
+                    row["Nama Brand"] = target["brand"]
+                if not str(row.get("Nama Portal") or "").strip():
+                    row["Nama Portal"] = target["portal"]
+                row["Aplikator"] = app_label
+
+            if target_rows:
+                state = "success"
+                stage = "detail outlet"
+                message = f"{len(target_rows)} outlet berhasil ditarik."
+                result["live_rows"].extend(target_rows)
+                log(pct, f"[WEEKLY][PORTAL][AUTH_SUCCESS] Sesi/auth akun untuk portal '{target['portal']}' berhasil.")
+                log(pct, f"[WEEKLY][PORTAL][SELECTED] Portal '{target['portal']}' berhasil diproses.")
+                log(pct, f"[WEEKLY][PORTAL][STORES] Store ditemukan={len(target_rows)}.")
+                log(pct, f"[WEEKLY][PORTAL][DETAIL] Berhasil={len(target_rows)} | Gagal=0.")
+                log(pct, f"[WEEKLY][PORTAL][SUCCESS] Owner='{owner_name}' | Portal='{target['portal']}' | jumlah outlet={len(target_rows)}.")
+            else:
+                state = "failed"
+                stage, message = _portal_error_context(
+                    captured_lines, target["portal"], rc, allow_unscoped=len(targets) == 1
+                )
+                if rc == 0 and not any(target["portal"].casefold() in line.casefold() for line in captured_lines):
+                    message = "Tidak ada hasil live baru untuk portal ini; hasil cache lama tidak dipakai."
+                log(pct, f"[WEEKLY][PORTAL][DETAIL] Berhasil=0 | Gagal=tidak diketahui | Tahap={stage}.")
+                log(pct, f"[WEEKLY][PORTAL][FAILED] Owner='{owner_name}' | Portal='{target['portal']}' | Tahap={stage} | Error={message}")
+
+            for portal in target["portals"]:
+                result["portal_results"].append({
+                    "owner": owner_name,
+                    "aplikator": app_label,
+                    "portal": portal,
+                    "account_label": _mask_account_label(target.get("account")),
+                    "status": state,
+                    "stage": stage,
+                    "outlet_count": len(target_rows),
+                    "message": message,
+                })
+        return all_rows
+
+    if cancel_event and cancel_event.is_set():
+        return result
+
+    missing_portals = _weekly_missing_portals(dbr_df, owner_name)
+    for app_key, app_label, pct in (("gofood", "GoFood", 18), ("grab", "GrabFood", 48), ("shopee", "ShopeeFood", 72)):
+        for missing_label in missing_portals[app_key]:
+            message = "Kolom Nama Portal kosong pada baris DBR."
+            result["portal_results"].append({
+                "owner": owner_name, "aplikator": app_label, "portal": missing_label,
+                "account_label": "(tidak tersedia)", "status": "failed", "stage": "validasi DBR",
+                "outlet_count": 0, "message": message,
+            })
+            log(pct, f"[WEEKLY][PORTAL][FAILED] Owner='{owner_name}' | Aplikator={app_label} | DBR portal='{missing_label}' | Tahap=validasi DBR | Error={message}")
+
+    go_targets = _weekly_owner_targets(dbr_df, owner_name, "gofood")
+    if go_targets:
+        result["gofood"] = 0
+        go_with_creds = [t for t in go_targets if t.get("accounts")]
+        missing_creds = [t for t in go_targets if not t.get("accounts")]
+        for target in missing_creds:
+            message = "Kredensial email GoFood tidak ditemukan pada DBR."
+            log(18, f"[WEEKLY][PORTAL][FAILED] Owner='{owner_name}' | Portal='{target['portal']}' | Tahap=validasi DBR | Error={message}")
+            result["portal_results"].append({
+                "owner": owner_name, "aplikator": "GoFood", "portal": target["portal"],
+                "account_label": "(kosong)", "status": "failed", "stage": "validasi DBR",
+                "outlet_count": 0, "message": message,
+            })
+        if go_with_creds:
+            headless = os.getenv("HEADLESS_GOFOOD", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+            if not headless and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+                headless = True
+            run_platform(
+                "gofood", "GoFood", GOFOOD_DIR / "gofood_scraper.py", GOFOOD_DIR / "cache", "gofood_portal_",
+                ["--type", "dbr", "--owner", owner_name, "--all", "--headless" if headless else "--gui", "--no-master", "--no-upload"],
+                go_with_creds, 18, 1200,
+            )
+    else:
+        result["gofood"] = 0
+
+    if cancel_event and cancel_event.is_set():
+        return result
+
+    grab_targets = _weekly_owner_targets(dbr_df, owner_name, "grab")
+    if grab_targets:
+        result["grab"] = 0
+        grab_with_creds = [t for t in grab_targets if t.get("accounts") and t.get("has_password")]
+        missing_creds = [t for t in grab_targets if not t.get("accounts") or not t.get("has_password")]
+        for target in missing_creds:
+            missing = "username" if not target.get("accounts") else "kata sandi"
+            message = f"Kredensial {missing} GrabFood tidak ditemukan pada DBR."
+            log(48, f"[WEEKLY][PORTAL][FAILED] Owner='{owner_name}' | Portal='{target['portal']}' | Tahap=validasi DBR | Error={message}")
+            result["portal_results"].append({
+                "owner": owner_name, "aplikator": "GrabFood", "portal": target["portal"],
+                "account_label": "(kosong)", "status": "failed", "stage": "validasi DBR",
+                "outlet_count": 0, "message": message,
+            })
+        if grab_with_creds:
+            headless = os.getenv("HEADLESS_GRAB", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+            if not headless and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+                headless = True
+            run_platform(
+                "grab", "GrabFood", GRAB_DIR / "grab_merchant_scraper.py", GRAB_DIR / "cache", "grab_portal_",
+                ["--type", "dbr", "--owner", owner_name, "--fresh", "--headless" if headless else "--gui", "--no-master"],
+                grab_with_creds, 48, 1200,
+            )
+    else:
+        result["grab"] = 0
+
+    if cancel_event and cancel_event.is_set():
+        return result
+
+    shopee_targets = _weekly_owner_targets(dbr_df, owner_name, "shopee")
+    result["shopee"] = 0
+    if shopee_targets:
+        headless = os.getenv("HEADLESS_SHOPEE", os.getenv("HEADLESS", "true")).strip().lower() in ("true", "1", "yes", "y")
+        if not headless and not os.getenv("DISPLAY") and sys.platform.startswith("linux"):
+            headless = True
+        with tempfile.TemporaryDirectory(prefix="weekly-shopee-") as temp_dir:
+            for index, target in enumerate(shopee_targets, start=1):
+                if cancel_event and cancel_event.is_set():
+                    break
+                portal = target["portal"]
+                account_label = "allvbadmin"
+                log(72, f"[WEEKLY][PORTAL][START] Owner='{owner_name}' | Aplikator=ShopeeFood | Portal='{portal}' | Akun utama={account_label} | {index}/{len(shopee_targets)}.")
+                log(72, f"[WEEKLY][PORTAL][AUTH] Memulai autentikasi/pemulihan sesi Shopee untuk portal '{portal}'.")
+                output_path = Path(temp_dir) / f"shopee_{index}.xlsx"
+                captured_lines = []
+                rc = run_subprocess_stream(
+                    [
+                        python_bin, "-u", str(SHOPEE_DIR / "pull_outlet_info.py"),
+                        "--merchant-name", portal, "--output", str(output_path),
+                        "--headless" if headless else "--gui",
+                    ],
+                    cwd=SHOPEE_DIR,
+                    keywords=("[SHOPEE]", "login", "auth", "merchant", "store", "outlet", "detail", "gagal", "error", "berhasil", "switch", "scrape"),
+                    on_log=lambda line: log_child(74, "ShopeeFood", line),
+                    timeout_sec=600,
+                    cancel_event=cancel_event,
+                    redactions=redactions,
+                    on_line=captured_lines.append,
+                )
+                result["shopee_merchants"][portal] = rc
+                target_rows = []
+                if rc == 0 and output_path.exists():
+                    try:
+                        df_result = pd.read_excel(output_path, sheet_name="Listing")
+                        target_rows = df_result.to_dict(orient="records")
+                    except Exception:
+                        target_rows = []
+                if target_rows:
+                    for row in target_rows:
+                        row["Nama Pemilik"] = owner_name
+                        row["Nama Brand"] = target["brand"]
+                        row["Aplikator"] = "ShopeeFood"
+                        row["Nama Portal"] = portal
+                    result["live_rows"].extend(target_rows)
+                    log(76, f"[WEEKLY][PORTAL][AUTH_SUCCESS] Sesi akun utama allvbadmin aktif untuk '{portal}'.")
+                    log(76, f"[WEEKLY][PORTAL][SELECTED] Merchant/portal '{portal}' berhasil dipilih.")
+                    log(76, f"[WEEKLY][PORTAL][STORES] Store ditemukan={len(target_rows)}.")
+                    log(76, f"[WEEKLY][PORTAL][DETAIL] Berhasil={len(target_rows)} | Gagal=0.")
+                    result["portal_results"].append({
+                        "owner": owner_name, "aplikator": "ShopeeFood", "portal": portal,
+                        "account_label": account_label, "status": "success", "stage": "detail outlet",
+                        "outlet_count": len(target_rows), "message": f"{len(target_rows)} outlet berhasil ditarik.",
+                    })
+                    log(76, f"[WEEKLY][PORTAL][SUCCESS] Owner='{owner_name}' | Portal='{portal}' | jumlah outlet={len(target_rows)}.")
+                else:
+                    stage, message = _portal_error_context(captured_lines, portal, rc, allow_unscoped=True)
+                    if rc == 0 and not any(portal.casefold() in line.casefold() for line in captured_lines):
+                        message = "Tidak ada hasil live baru untuk portal ini."
+                    log(76, f"[WEEKLY][PORTAL][DETAIL] Berhasil=0 | Gagal=tidak diketahui | Tahap={stage}.")
+                    result["portal_results"].append({
+                        "owner": owner_name, "aplikator": "ShopeeFood", "portal": portal,
+                        "account_label": account_label, "status": "failed", "stage": stage,
+                        "outlet_count": 0, "message": message,
+                    })
+                    log(76, f"[WEEKLY][PORTAL][FAILED] Owner='{owner_name}' | Portal='{portal}' | Tahap={stage} | Error={message}")
+        result["shopee"] = 1 if any(item["aplikator"] == "ShopeeFood" and item["status"] == "failed" for item in result["portal_results"]) else 0
+
+    # Only current-run results can enter Listing and SOT. Keep output unique by platform/store.
+    if result["live_rows"]:
+        live_df = pd.DataFrame(result["live_rows"])
+        if "Store ID" in live_df.columns and "Aplikator" in live_df.columns:
+            has_id = live_df["Store ID"].fillna("").astype(str).str.strip().ne("")
+            with_id = live_df[has_id].drop_duplicates(["Aplikator", "Store ID"], keep="last")
+            without_id = live_df[~has_id]
+            result["live_rows"] = pd.concat([with_id, without_id], ignore_index=True).to_dict(orient="records")
+    failed = sum(1 for item in result["portal_results"] if item["status"] == "failed")
+    log(78, f"[WEEKLY][OWNER][RESULT] Owner='{owner_name}' | Outlet live={len(result['live_rows'])} | Portal gagal={failed}.")
+    return result
+
+
+def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, retry_targets=None, cancel_event=None, dbr_df=None):
     """
     Menjalankan live scraping untuk GoFood, GrabFood, dan ShopeeFood secara berurutan.
     progress_cb: function(percent: int, log_line: str)
@@ -801,6 +1283,9 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
     cancel_event: threading.Event opsional untuk membatalkan proses secara langsung
     Mengembalikan dict status hasil scraping per-aplikator.
     """
+    if dbr_df is not None:
+        return _run_weekly_dbr_scraping(owner_name, dbr_df, progress_cb=progress_cb, cancel_event=cancel_event)
+
     clean_owner = owner_name.strip()
     python_bin = sys.executable
     scrape_status = {
@@ -1158,7 +1643,7 @@ def verify_extraction_completeness(expected_df, owner_df, scrape_status=None):
     return missing_items
 
 
-def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source="vercel", live_scrape=True, progress_callback=None, lock_timeout=0, requested_by="System", retry_targets=None, cancel_event=None):
+def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source="vercel", live_scrape=True, progress_callback=None, lock_timeout=0, requested_by="System", retry_targets=None, cancel_event=None, dbr_df=None):
     """
     Pipeline pembuatan file per-owner dan upload Drive dengan progress callback.
     Menggunakan Vercel Sheet sebagai sumber utama dan memperkaya data dengan hasil live scraping.
@@ -1191,7 +1676,14 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             scrape_status = {}
             if live_scrape and owner_name != "__ALL__":
                 log(12, f"Menjalankan penarikan live data toko untuk '{owner_name}'...")
-                scrape_status = run_live_scraping_for_owner(owner_name, aplikator=aplikator, progress_cb=progress_callback, retry_targets=retry_targets, cancel_event=cancel_event)
+                scrape_status = run_live_scraping_for_owner(
+                    owner_name,
+                    aplikator=aplikator,
+                    progress_cb=progress_callback,
+                    retry_targets=retry_targets,
+                    cancel_event=cancel_event,
+                    dbr_df=dbr_df if source == "dbr" else None,
+                )
 
             if cancel_event and cancel_event.is_set():
                 log(100, "🛑 Pipeline dibatalkan oleh pengguna.")
@@ -1208,7 +1700,9 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             app_display = "ALL" if is_all_apps else "+".join(sorted(active_apps)).upper()
 
             log(78, f"Membaca data sumber ({source.upper()}) untuk aplikator: {app_display}...")
-            if source == "vercel":
+            if source == "dbr":
+                src_df = dbr_df.copy() if isinstance(dbr_df, pd.DataFrame) else pd.DataFrame()
+            elif source == "vercel":
                 src_df = load_vercel_data()
             else:
                 dfs = []
@@ -1260,68 +1754,115 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             # Enrich data dari hasil scraping jika tersedia (Bank, Rekening, Store ID, Alamat)
             log(82, "Menggabungkan hasil penarikan data toko (Store ID, Alamat, Bank)...")
             try:
-                df_go = load_gofood_data()
-                df_gr = load_grab_data()
-                df_sh = load_shopee_data()
-                scraped_list = [d for d in [df_go, df_gr, df_sh] if not d.empty]
-                scraped_all = pd.concat(scraped_list, ignore_index=True) if scraped_list else pd.DataFrame()
-
-                scraped_owner = pd.DataFrame()
-                if not scraped_all.empty and "Nama Pemilik" in scraped_all.columns:
-                    scraped_owner = scraped_all[scraped_all["Nama Pemilik"].astype(str).str.strip().str.lower() == owner_name.strip().lower()]
-
                 final_rows = []
-                app_order_std = ["GoFood", "GrabFood", "ShopeeFood"]
-                unique_apps = list(owner_df["Aplikator"].dropna().unique())
-                sorted_apps = [a for a in app_order_std if a in unique_apps] + [a for a in unique_apps if a not in app_order_std]
-                for app in sorted_apps:
-                    app_vercel_rows = owner_df[owner_df["Aplikator"] == app]
-                    app_scraped_rows = scraped_owner[scraped_owner["Aplikator"] == app] if not scraped_owner.empty and "Aplikator" in scraped_owner.columns else pd.DataFrame()
-
-                    if not app_scraped_rows.empty:
-                        v_first = app_vercel_rows.iloc[0]
-                        for _, s_row in app_scraped_rows.iterrows():
+                if source == "dbr":
+                    scraped_owner = pd.DataFrame(scrape_status.get("live_rows", []))
+                    if not scraped_owner.empty:
+                        if "Nama Pemilik" in scraped_owner.columns:
+                            scraped_owner = scraped_owner[
+                                scraped_owner["Nama Pemilik"].fillna("").astype(str).str.strip().str.casefold()
+                                == owner_name.strip().casefold()
+                            ]
+                        for _, s_row in scraped_owner.iterrows():
                             row_dict = s_row.to_dict()
-                            s_portal = str(s_row.get("Nama Portal") or "").strip().lower()
-                            v_target = v_first
-                            for _, v_candidate in app_vercel_rows.iterrows():
-                                cand_keys = [
-                                    str(v_candidate.get("Merchant Name") or "").strip().lower(),
-                                    str(v_candidate.get("Nama Portal") or "").strip().lower(),
-                                    str(v_candidate.get("Nama Akses") or "").strip().lower(),
-                                    str(v_candidate.get("Nama Outlet") or "").strip().lower()
-                                ]
-                                if s_portal in cand_keys or any(k and k in s_portal for k in cand_keys if len(k) > 3):
-                                    v_target = v_candidate
-                                    break
-
-                            nama_outlet_val = str(v_target.get("Nama Outlet") or "").strip()
-                            # Sesuai instruksi user: untuk kolom brand ambil dari kolom Nama Outlet saja
-                            if nama_outlet_val:
-                                row_dict["Nama Outlet"] = nama_outlet_val
-                                row_dict["Nama Brand"] = nama_outlet_val
-                            for col in ["Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
-                                        "Nama Portal", "Nama Portal.1", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
-                                        "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
-                                        "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
-                                        "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff", "BD", "Status Internal"]:
-                                if col in v_target and pd.notna(v_target[col]) and str(v_target[col]).strip() != "":
-                                    if col not in row_dict or pd.isna(row_dict.get(col)) or str(row_dict.get(col)).strip() == "":
-                                        row_dict[col] = v_target[col]
+                            app = str(row_dict.get("Aplikator") or "").strip()
+                            portal = str(row_dict.get("Nama Portal") or "").strip().casefold()
+                            app_candidates = owner_df[owner_df["Aplikator"].astype(str).str.casefold() == app.casefold()]
+                            dbr_target = None
+                            if portal and not app_candidates.empty:
+                                for _, candidate in app_candidates.iterrows():
+                                    portal_values = [candidate.get(c) for c in ("Nama Portal", "Nama Akses", "Nama Outlet", "Nama Brand")]
+                                    candidate_keys = [str(v or "").strip().casefold() for v in portal_values if str(v or "").strip()]
+                                    if any(portal == key or portal in key or key in portal for key in candidate_keys):
+                                        dbr_target = candidate
+                                        break
+                            if dbr_target is None and len(app_candidates) == 1:
+                                dbr_target = app_candidates.iloc[0]
+                            row_dict["Nama Pemilik"] = owner_name
+                            if dbr_target is not None:
+                                for col in ["Nama Brand", "Nama Outlet", "Outlet", "Tipe", "Model", "Nomor HP", "Nama Akses",
+                                            "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi", "Nama Portal",
+                                            "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
+                                            "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
+                                            "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
+                                            "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff", "BD", "Status Internal"]:
+                                    value = dbr_target.get(col)
+                                    if pd.notna(value) and str(value).strip() and (col not in row_dict or not str(row_dict.get(col) or "").strip()):
+                                        row_dict[col] = value
+                            if not str(row_dict.get("Nama Brand") or "").strip():
+                                row_dict["Nama Brand"] = row_dict.get("Nama Outlet") or ""
                             final_rows.append(row_dict)
-                    else:
-                        for _, v_row in app_vercel_rows.iterrows():
-                            v_dict = v_row.to_dict()
-                            if "Nama Outlet" in v_dict and pd.notna(v_dict["Nama Outlet"]):
-                                v_dict["Nama Brand"] = str(v_dict["Nama Outlet"]).strip()
-                            final_rows.append(v_dict)
+                else:
+                    df_go = load_gofood_data()
+                    df_gr = load_grab_data()
+                    df_sh = load_shopee_data()
+                    scraped_list = [d for d in [df_go, df_gr, df_sh] if not d.empty]
+                    scraped_all = pd.concat(scraped_list, ignore_index=True) if scraped_list else pd.DataFrame()
+
+                    scraped_owner = pd.DataFrame()
+                    if not scraped_all.empty and "Nama Pemilik" in scraped_all.columns:
+                        scraped_owner = scraped_all[scraped_all["Nama Pemilik"].astype(str).str.strip().str.lower() == owner_name.strip().lower()]
+
+                    app_order_std = ["GoFood", "GrabFood", "ShopeeFood"]
+                    unique_apps = list(owner_df["Aplikator"].dropna().unique())
+                    sorted_apps = [a for a in app_order_std if a in unique_apps] + [a for a in unique_apps if a not in app_order_std]
+                    for app in sorted_apps:
+                        app_vercel_rows = owner_df[owner_df["Aplikator"] == app]
+                        app_scraped_rows = scraped_owner[scraped_owner["Aplikator"] == app] if not scraped_owner.empty and "Aplikator" in scraped_owner.columns else pd.DataFrame()
+
+                        if not app_scraped_rows.empty:
+                            v_first = app_vercel_rows.iloc[0]
+                            for _, s_row in app_scraped_rows.iterrows():
+                                row_dict = s_row.to_dict()
+                                s_portal = str(s_row.get("Nama Portal") or "").strip().lower()
+                                v_target = v_first
+                                for _, v_candidate in app_vercel_rows.iterrows():
+                                    cand_keys = [
+                                        str(v_candidate.get("Merchant Name") or "").strip().lower(),
+                                        str(v_candidate.get("Nama Portal") or "").strip().lower(),
+                                        str(v_candidate.get("Nama Akses") or "").strip().lower(),
+                                        str(v_candidate.get("Nama Outlet") or "").strip().lower()
+                                    ]
+                                    if s_portal in cand_keys or any(k and k in s_portal for k in cand_keys if len(k) > 3):
+                                        v_target = v_candidate
+                                        break
+
+                                nama_outlet_val = str(v_target.get("Nama Outlet") or "").strip()
+                                if nama_outlet_val:
+                                    row_dict["Nama Outlet"] = nama_outlet_val
+                                    row_dict["Nama Brand"] = nama_outlet_val
+                                for col in ["Nama Akses", "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi",
+                                            "Nama Portal", "Nama Portal.1", "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
+                                            "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
+                                            "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
+                                            "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff", "BD", "Status Internal"]:
+                                    if col in v_target and pd.notna(v_target[col]) and str(v_target[col]).strip() != "":
+                                        if col not in row_dict or pd.isna(row_dict.get(col)) or str(row_dict.get(col)).strip() == "":
+                                            row_dict[col] = v_target[col]
+                                final_rows.append(row_dict)
+                        else:
+                            for _, v_row in app_vercel_rows.iterrows():
+                                v_dict = v_row.to_dict()
+                                if "Nama Outlet" in v_dict and pd.notna(v_dict["Nama Outlet"]):
+                                    v_dict["Nama Brand"] = str(v_dict["Nama Outlet"]).strip()
+                                final_rows.append(v_dict)
 
                 if final_rows:
                     owner_df = pd.DataFrame(final_rows)
-                    if "Nama Outlet" in owner_df.columns:
+                    if "Nama Outlet" in owner_df.columns and source != "dbr":
                         owner_df["Nama Brand"] = owner_df["Nama Outlet"].astype(str).str.strip()
             except Exception as e:
                 print(f"⚠️ Info enrich scraped: {e}")
+
+            if owner_df.empty:
+                log(100, f"❌ Tidak ada hasil live sukses untuk owner '{owner_name}'; Listing dan SOT tidak diisi dari cache lama.")
+                return {
+                    "success": False,
+                    "error": "Tidak ada hasil live sukses",
+                    "owner": owner_name,
+                    "portal_results": scrape_status.get("portal_results", []),
+                    "sot_rows": [],
+                }
 
             # Deduplikasi ketat data owner untuk mencegah baris ganda (misal duplikasi input di Vercel atau multiple scrape)
             if not owner_df.empty:
@@ -1350,11 +1891,26 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
             owner_df = sort_df_by_aplikator(owner_df)
             expected_df = sort_df_by_aplikator(expected_df)
 
-            # Verifikasi kelengkapan ekstraksi terhadap Vercel Sheet & Detektor Platform
-            missing_items = verify_extraction_completeness(expected_df, owner_df, scrape_status)
+            # DBR mode evaluates portal outcomes directly; other pipelines keep their legacy checks.
+            if source == "dbr":
+                failed_portals = [item for item in scrape_status.get("portal_results", []) if item.get("status") != "success"]
+                missing_items = [
+                    {
+                        "aplikator": item.get("aplikator", ""),
+                        "outlet": item.get("portal", ""),
+                        "portal": item.get("portal", ""),
+                        "reason": f"{item.get('stage', 'scraping')}: {item.get('message', 'Gagal')}",
+                    }
+                    for item in failed_portals
+                ]
+            else:
+                missing_items = verify_extraction_completeness(expected_df, owner_df, scrape_status)
             detector_warnings = scrape_status.get("detector_warnings", [])
             is_partial = len(missing_items) > 0 or len(detector_warnings) > 0
-            completed_count = max(0, len(expected_df) - len(missing_items))
+            completed_count = (
+                sum(1 for item in scrape_status.get("portal_results", []) if item.get("status") == "success")
+                if source == "dbr" else max(0, len(expected_df) - len(missing_items))
+            )
 
             if is_partial:
                 warn_note = f", {len(detector_warnings)} peringatan platform" if detector_warnings else ""
@@ -1403,7 +1959,9 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                         "gofood": go_n,
                         "grab": gr_n,
                         "shopee": sh_n,
-                        "error": res.get("error")
+                        "error": res.get("error"),
+                        "portal_results": scrape_status.get("portal_results", []),
+                        "sot_rows": weekly_sot_rows(owner_df) if source == "dbr" else [],
                     }
             else:
                 log(100, "✅ Selesai (Mode Lokal Saja).")
@@ -1423,6 +1981,8 @@ def generate_for_owner_pipeline(owner_name, aplikator="all", upload=True, source
                 "gofood": go_n,
                 "grab": gr_n,
                 "shopee": sh_n,
+                "portal_results": scrape_status.get("portal_results", []),
+                "sot_rows": weekly_sot_rows(owner_df) if source == "dbr" else [],
                 "folder_url": drive_res.get("folderUrl") or "https://drive.google.com/drive/u/0/folders/19VIrypPcBmNNbjDLGS7kxp_yIdBBwXjB",
                 "file_url": drive_res.get("fileUrl", "")
             }
@@ -1598,6 +2158,7 @@ def main():
     parser.add_argument("--local-only", action="store_true", help="Hanya buat file Excel lokal di output_owners/ tanpa upload")
     parser.add_argument("--list-owners", action="store_true", help="Tampilkan daftar semua owner dan jumlah outlet")
     parser.add_argument("--lock-timeout", type=int, default=0, help="Timeout menunggu JobLock (detik, default: 0 = fail-fast)")
+    parser.add_argument("--weekly-dbr", action="store_true", help="Jalankan pipeline weekly live dengan snapshot DBR privat dari environment")
 
     args = parser.parse_args()
 
@@ -1606,6 +2167,43 @@ def main():
         return
 
     do_upload = args.upload and not args.local_only
+    if args.weekly_dbr:
+        snapshot_path = os.getenv("WEEKLY_DBR_SNAPSHOT", "").strip()
+        result_path = os.getenv("WEEKLY_OWNER_RESULT_FILE", "").strip()
+        if not args.owner or not snapshot_path or not result_path or not Path(snapshot_path).is_file():
+            print("❌ Mode weekly membutuhkan --owner serta snapshot dan lokasi hasil dari environment.")
+            return 1
+        dbr_df = pd.DataFrame()
+        try:
+            dbr_df = pd.read_csv(snapshot_path)
+            result = generate_for_owner_pipeline(
+                args.owner,
+                upload=do_upload,
+                source="dbr",
+                live_scrape=True,
+                requested_by="Weekly SOT",
+                dbr_df=dbr_df,
+            )
+            safe_result = {
+                "owner": args.owner,
+                "success": bool(result.get("success")),
+                "is_partial": bool(result.get("is_partial")),
+                "error": _redact_weekly_log(result.get("error", ""), _weekly_redactions(dbr_df, args.owner)),
+                "portal_results": result.get("portal_results", []),
+                "sot_rows": result.get("sot_rows", []),
+            }
+            result_file = Path(result_path)
+            result_file.parent.mkdir(parents=True, exist_ok=True)
+            result_file.write_text(json.dumps(safe_result, ensure_ascii=False), encoding="utf-8")
+            return 0 if result.get("success") else 1
+        except Exception as exc:
+            print(f"❌ Weekly DBR pipeline gagal ({type(exc).__name__}): {_redact_weekly_log(exc, _weekly_redactions(dbr_df, args.owner))}")
+            try:
+                Path(result_path).write_text(json.dumps({"owner": args.owner, "success": False, "error": type(exc).__name__, "portal_results": [], "sot_rows": []}), encoding="utf-8")
+            except Exception:
+                pass
+            return 1
+
     ok = process_and_combine(owner_filter=args.owner, upload=do_upload, lock_timeout=args.lock_timeout)
     return 0 if ok is not False else 1
 

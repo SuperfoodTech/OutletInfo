@@ -556,13 +556,22 @@ def get_safe_cache_filename(portal_name):
 
 
 def get_credentials_from_sheet(source_type="agency", custom_url=None):
-    """Mengambil daftar kredensial portal GoFood berdasarkan tipe sumber (Agency, VB, atau Vercel)."""
+    """Mengambil daftar kredensial portal GoFood berdasarkan sumber yang dipilih."""
     import subprocess
     data = []
     target_url = custom_url
     st_lower = str(source_type).lower()
     
-    if not target_url:
+    if st_lower == "dbr":
+        snapshot_path = os.getenv("WEEKLY_DBR_SNAPSHOT", "").strip()
+        if snapshot_path and os.path.isfile(snapshot_path):
+            try:
+                with open(snapshot_path, "r", encoding="utf-8", newline="") as f:
+                    data = list(csv.reader(f))
+            except Exception as e:
+                print(f"❌ Gagal membaca snapshot DBR: {type(e).__name__}")
+        target_url = None
+    elif not target_url:
         if st_lower == "vb":
             target_url = GOOGLE_SHEET_VB_URL or os.getenv("GOFOOD_VB_CSV_URL", "")
         elif st_lower == "vercel":
@@ -640,7 +649,7 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
         col_pass = 28
     else:
         for i, h in enumerate(header):
-            if h in ['aplikasi', 'app', 'platform']:
+            if h in ['aplikasi', 'aplikator', 'app', 'platform']:
                 col_app = i
             elif h in ['owner', 'nama pemilik', 'pemilik']:
                 col_owner = i
@@ -649,16 +658,16 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
             elif h in ['nama akses', 'nama portal', 'portal', 'brand']:
                 if col_portal == -1 or h in ['nama portal', 'portal', 'nama akses']:
                     col_portal = i
-            elif h in ['email', 'email foodmaster1', 'email login', 'email 1', 'email1']:
+            elif h in ['email', 'email foodmaster1', 'email login', 'email 1', 'email1', 'email foodmaster 1']:
                 col_email1 = i
-            elif h in ['email foodmaster2', 'email 2', 'email2']:
+            elif h in ['email foodmaster2', 'email foodmaster 2', 'email 2', 'email2']:
                 col_email2 = i
             elif 'email' in h:
                 if col_email1 == -1:
                     col_email1 = i
                 elif col_email2 == -1:
                     col_email2 = i
-            elif h in ['password', 'kata sandi', 'pass login', 'pass']:
+            elif h in ['password', 'kata sandi', 'akses kata sandi', 'pass login', 'pass']:
                 col_pass = i
             elif any(k in h for k in ['notes', 'catatan', 'keterangan']):
                 col_notes = i
@@ -1256,7 +1265,7 @@ def run_manual_mode():
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="GoFood Scraper")
-    parser.add_argument("--type", type=str, choices=["agency", "vb", "vercel", "manual"], help="Pilih tipe sumber: 'agency', 'vb', 'vercel', atau 'manual'")
+    parser.add_argument("--type", type=str, choices=["agency", "vb", "vercel", "dbr", "manual"], help="Pilih tipe sumber: 'agency', 'vb', 'vercel', DBR, atau 'manual'")
     parser.add_argument("--agency", action="store_true", help="Gunakan sumber kredensial Agency")
     parser.add_argument("--vb", action="store_true", help="Gunakan sumber kredensial VB (Virtual Brand)")
     parser.add_argument("--vercel", action="store_true", help="Gunakan sumber kredensial Vercel Sheet")
@@ -1289,6 +1298,8 @@ def main():
         source_type = "vb"
     elif args.vercel or args.type == "vercel":
         source_type = "vercel"
+    elif args.type == "dbr":
+        source_type = "dbr"
     elif args.agency or args.type == "agency":
         source_type = "agency"
     elif not args.portal and not args.owner and not args.all and not args.combine_only:

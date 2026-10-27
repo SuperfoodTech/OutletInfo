@@ -117,7 +117,7 @@ async def get_cached_owners(max_age: float = 180.0):
         if _owner_cache["data"] and (now - _owner_cache["ts"] < max_age):
             return _owner_cache["data"]
         try:
-            owners = await asyncio.to_thread(get_owners_with_metadata, source="vercel", force_live=False)
+            owners = await asyncio.to_thread(get_owners_with_metadata, source="dbr", force_live=False)
             if owners:
                 _owner_cache["data"] = owners
                 _owner_cache["ts"] = now
@@ -536,18 +536,26 @@ async def execute_sot_cronjob(interaction: discord.Interaction, target_owner: st
         fail = "-"
         dur = "-"
         sh_res = "-"
+        sheet_skipped = False
         if latest:
             rep, _ = latest
             succ = len(rep.get("completed_owners", []))
             fail = len(rep.get("failed_owners", []))
             dur = rep.get("duration", "-")
             sh_data = rep.get("sheet_sync", {})
-            sh_res = f"Ditimpa: {sh_data.get('total_updated', 0)} | Baru: {sh_data.get('total_inserted', 0)} | Total: {sh_data.get('totalRows', '-')}"
+            sheet_skipped = sh_data.get("status") == "skipped"
+            if sheet_skipped:
+                sh_res = str(sh_data.get("message", "Full refresh tidak dijalankan."))[:900]
+            else:
+                sh_res = f"Ditimpa: {sh_data.get('total_updated', 0)} | Baru: {sh_data.get('total_inserted', 0)} | Total: {sh_data.get('totalRows', '-')}"
 
         success_embed = discord.Embed(
-            title="🎉 CRONJOB SINKRONISASI SOT SELESAI!",
-            description=f"Penarikan data otomatis mingguan untuk {owner_desc} telah selesai diproses.",
-            color=THEME_SUCCESS,
+            title="✅ SCRAPING SELESAI — SOT TIDAK DIUBAH" if sheet_skipped else "🎉 CRONJOB SINKRONISASI SOT SELESAI!",
+            description=(
+                f"Penarikan untuk {owner_desc} selesai. Full refresh SOT dilewati agar hasil owner terbatas tidak menimpa snapshot seluruh owner."
+                if sheet_skipped else f"Penarikan data otomatis mingguan untuk {owner_desc} telah selesai diproses."
+            ),
+            color=THEME_WARNING if sheet_skipped else THEME_SUCCESS,
             timestamp=datetime.datetime.now()
         )
         success_embed.set_thumbnail(url=SUCCESS_THUMBNAIL)
