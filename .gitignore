@@ -38,6 +38,8 @@ GOFOOD/cache/
 
 # Credentials & CSV
 *.csv
+SHOPEE/credentials.json
+SHOPEE/credentials_vb.json
 
 # Session files
 GOFOOD/session/

@@ -7,7 +7,7 @@ serta siap untuk ShopeeFood) ke dalam satu file per-owner:
     YYYY-MM-DD HH_MM [Nama Pemilik].xlsx
 
 Spesifikasi File:
-- Menggunakan template standar 36 kolom (sheet 'Listing').
+- Menggunakan schema standar 48 kolom (sheet 'Listing').
 - Memiliki 2 tab (sheet) yang 100% identik:
     Tab 1: 'Listing'
     Tab 2: 'Listing 2'
@@ -55,6 +55,22 @@ GOOGLE_SHEET_VERCEL_URL = os.getenv(
 )
 APP_SCRIPT_URL = os.getenv("APP_SCRIPT_URL", "")
 
+LISTING_HEADERS = [
+    'Nama Pemilik', 'Nama Brand', 'Model', 'Tipe', 'Outlet', 'Nomor HP',
+    'Aplikator', 'Group ID', 'Nama Listing', 'Link', 'Store ID', 'Status Listing',
+    'Alamat', 'Nama Bank', 'Nama Pemilik Rekening', 'Nomor Rekening', 'Nama Akses',
+    'Email FoodMaster1', 'Email FoodMaster2', 'Nama Pengguna', 'Kata Sandi',
+    'Nama Portal', 'S Nomor HP Akses Pemilik', 'S Username Akses Pemilik',
+    'S Kata Sandi Akses Pemilik', 'S Allvbadmin Username Akses Staff',
+    'S Allvbadmin Kata Sandi Akses Staff', 'S Bot Username Akses Staff',
+    'S Bot Kata Sandi Akses Staff', 'S BD Username Akses Staff',
+    'S BD Kata Sandi Akses Staff', 'BD', 'Status Internal', 'Tanggal Akuisisi',
+    'Tanggal Live', 'Tanggal Churn', 'Tarif', 'Status Bot', 'Vercel Kata Sandi',
+    'Paket', 'Tanggal Mulai Layanan', 'Tanggal Berakhir Layanan', 'Akses Username',
+    'Akses Kata Sandi', 'Komisi ShopeeFood', 'Biaya Kemasan',
+    'Nominal Biaya Kemasan', 'Invite Staff'
+]
+
 
 def format_grab_food_link(store_id_or_link: str) -> str:
     """
@@ -84,37 +100,8 @@ def format_grab_food_link(store_id_or_link: str) -> str:
 
 
 def get_template_headers():
-    """Mengambil kolom header resmi dari file template."""
-    if TEMPLATE_PATH.exists():
-        try:
-            wb = openpyxl.load_workbook(str(TEMPLATE_PATH), read_only=True)
-            sheet = wb["Listing"] if "Listing" in wb.sheetnames else wb.active
-            headers = []
-            for cell in next(sheet.iter_rows(min_row=1, max_row=1)):
-                val = cell.value
-                if val is not None and str(val).strip():
-                    headers.append(str(val).strip())
-                else:
-                    break
-            wb.close()
-            if headers:
-                return headers
-        except Exception as e:
-            print(f"⚠️ Gagal membaca template ({e}), menggunakan default header.")
-            
-    # Fallback default 36 kolom jika template tidak terbaca (setelah kolom ke-8 Nama Portal dihapus)
-    return [
-        'Nama Pemilik', 'Nama Brand', 'Model', 'Tipe', 'Outlet', 'Nomor HP',
-        'Aplikator', 'Group ID', 'Nama Listing', 'Link', 'Store ID',
-        'Status Listing', 'Alamat', 'Nama Bank', 'Nama Pemilik Rekening', 'Nomor Rekening',
-        'Nama Akses', 'Email FoodMaster1', 'Email FoodMaster2', 'Nama Pengguna',
-        'Kata Sandi', 'Nama Portal', 'S Nomor HP Akses Pemilik', 'S Username Akses Pemilik',
-        'S Kata Sandi Akses Pemilik', 'S Allvbadmin Username Akses Staff',
-        'S Allvbadmin Kata Sandi Akses Staff', 'S Bot Username Akses Staff',
-        'S Bot Kata Sandi Akses Staff', 'S BD Username Akses Staff',
-        'S BD Kata Sandi Akses Staff', 'BD', 'Status Internal', 'Tanggal Live',
-        'Tanggal Churn', 'Tarif'
-    ]
+    """Mengembalikan schema Listing resmi, terlepas dari template lama."""
+    return LISTING_HEADERS.copy()
 
 
 def load_gofood_data():
@@ -406,6 +393,12 @@ def write_data_to_sheet(ws, df, headers):
     """Menulis data ke sheet yang telah memiliki header, styling, dan lebar kolom dari template."""
     body_font = Font(name='Arial', size=10)
     alignment = Alignment(horizontal='left', vertical='center')
+
+    # Tulis ulang header agar template lama ikut menghasilkan schema terbaru.
+    for c_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=c_idx, value=header)
+        cell.font = Font(name='Arial', size=10, bold=True)
+        cell.alignment = alignment
 
     # Alias mapping jika nama kolom di df sedikit berbeda dengan nama header template
     col_aliases = {
@@ -782,7 +775,7 @@ def run_subprocess_stream(cmd, cwd, keywords, on_log, timeout_sec=150, cancel_ev
                 is_status = any(line_s.startswith(p) for p in ("[*]", "[✓]", "🚀", "🌐", "➡️", "📧", "⏳", "✅", "⚠️", "❌", "🎉", "⚡", "🏢", "📍", "🚨"))
                 has_kw = any(k.lower() in line_s.lower() for k in keywords)
                 if is_status or has_kw:
-                    on_log(line_s[:85])
+                    on_log(line_s[:500] if "[SHOPEE]" in line_s else line_s[:85])
             else:
                 if p.poll() is not None:
                     break
@@ -830,9 +823,6 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             except Exception:
                 pass
 
-    # Selalu pastikan cache lokal Vercel Sheet paling segar sebelum scraping dimulai
-    load_vercel_data(force_live=True)
-
     def send_log(pct, msg):
         if progress_cb:
             progress_cb(pct, msg)
@@ -859,6 +849,10 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
         if app_key == "shopee" and any("shopee" in a for a in target_apps):
             return True
         return False
+
+    # Vercel masih menjadi referensi GoFood/Grab; target merchant Shopee berasal dari DBR.
+    if should_run_app("gofood") or should_run_app("grab"):
+        load_vercel_data(force_live=True)
 
     # 1. LIVE SCRAPING GOFOOD
     if should_run_app("gofood"):
@@ -938,8 +932,15 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
             return scrape_status
         send_log(68, f"🚀 [ShopeeFood] Memeriksa akun Shopee untuk '{clean_owner}'...")
         try:
-            v_df = load_vercel_data()
-            o_shopee = v_df[(v_df["Nama Pemilik"].astype(str).str.strip().str.lower() == clean_owner.lower()) & (v_df["Aplikator"] == "ShopeeFood")]
+            from cronjobsot.export_to_sot import load_dbr_master_data
+
+            dbr_df = load_dbr_master_data()
+            if dbr_df.empty or not {"Nama Pemilik", "Aplikator", "Nama Portal"}.issubset(dbr_df.columns):
+                raise ValueError("Tab DBR kosong atau tidak memiliki kolom Nama Pemilik, Aplikator, dan Nama Portal")
+
+            owner_names = dbr_df["Nama Pemilik"].fillna("").astype(str).str.strip().str.lower()
+            app_names = dbr_df["Aplikator"].fillna("").astype(str).str.strip().str.lower()
+            o_shopee = dbr_df[(owner_names == clean_owner.lower()) & app_names.str.contains("shopee")]
             merchant_targets = []
             if not o_shopee.empty:
                 known_shopee = get_known_shopee_merchants()
@@ -948,63 +949,40 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                 def _norm(s):
                     return re.sub(r'[^a-z0-9]', '', re.sub(r'\[.*?\]', '', (s or '').lower()))
 
-                for _, r in o_shopee.iterrows():
-                    portal_candidates = []
-                    for col in ["Nama Portal", "Nama Akses", "Merchant Name"]:
-                        val = str(r.get(col) or "").strip()
-                        if val and val.lower() not in ("nan", "none", "-") and val not in portal_candidates:
-                            portal_candidates.append(val)
-
-                    other_candidates = []
-                    for col in ["Nama Brand", "Nama Outlet"]:
-                        val = str(r.get(col) or "").strip()
-                        if val and val.lower() not in ("nan", "none", "-") and val not in other_candidates and val not in portal_candidates:
-                            other_candidates.append(val)
-
-                    candidates = portal_candidates + other_candidates
-                    if not candidates:
+                for portal_value in o_shopee["Nama Portal"].dropna().astype(str):
+                    portal_name = portal_value.strip()
+                    if not portal_name or portal_name.lower() in ("nan", "none", "-"):
                         continue
 
                     best_match = None
                     if known_shopee:
-                        target_pool = portal_candidates if portal_candidates else candidates
-                        # 1. Exact match pada target_pool
-                        for c in target_pool:
-                            c_clean = c.lower().rstrip("_").strip()
-                            for k in known_shopee:
-                                if c_clean == k.lower().rstrip("_").strip():
-                                    best_match = k
-                                    break
-                            if best_match:
+                        # Canonicalize portal dari DBR ke nama merchant yang dikenal scraper.
+                        c_clean = portal_name.lower().rstrip("_").strip()
+                        for k in known_shopee:
+                            if c_clean == k.lower().rstrip("_").strip():
+                                best_match = k
                                 break
 
                         # 2. Normalized exact match
                         if not best_match:
-                            for c in target_pool:
-                                c_norm = _norm(c)
-                                if not c_norm:
-                                    continue
+                            c_norm = _norm(portal_name)
+                            if c_norm:
                                 for k in known_shopee:
                                     if c_norm == _norm(k):
                                         best_match = k
                                         break
-                                if best_match:
-                                    break
 
                         # 3. Substring match
                         if not best_match:
-                            for c in target_pool:
-                                c_norm = _norm(c)
-                                if len(c_norm) >= 4:
-                                    for k in known_shopee:
-                                        k_norm = _norm(k)
-                                        if len(k_norm) >= 4 and (c_norm in k_norm or k_norm in c_norm):
-                                            best_match = k
-                                            break
-                                    if best_match:
+                            c_norm = _norm(portal_name)
+                            if len(c_norm) >= 4:
+                                for k in known_shopee:
+                                    k_norm = _norm(k)
+                                    if len(k_norm) >= 4 and (c_norm in k_norm or k_norm in c_norm):
+                                        best_match = k
                                         break
 
-                    chosen_val = best_match or (portal_candidates[0] if portal_candidates else candidates[0])
+                    chosen_val = best_match or portal_name
 
                     # Filter spesifik jika retry_targets ditentukan
                     if retry_targets is not None:
@@ -1024,7 +1002,7 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                     if cancel_event and cancel_event.is_set():
                         send_log(100, "🛑 Penarikan ShopeeFood dibatalkan oleh pengguna.")
                         break
-                    send_log(70, f"[ShopeeFood] Menarik data toko [{idx}/{len(merchant_targets)}] '{merchant_name}'...")
+                    send_log(70, f"[SHOPEE][PORTAL][START] Owner='{clean_owner}' | Portal='{merchant_name}' | Akun utama: allvbadmin | Portal {idx}/{len(merchant_targets)}.")
                     cmd = [
                         python_bin,
                         "-u",
@@ -1036,8 +1014,8 @@ def run_live_scraping_for_owner(owner_name, aplikator="all", progress_cb=None, r
                     rc_sh = run_subprocess_stream(
                         cmd,
                         cwd=SHOPEE_DIR,
-                        keywords=("Store", "Berhasil", "Merchant", "Data", "Sukses", "Total", "Selesai", "Token", "SYNC", "auth", "PERINGATAN", "DETEKTOR", "GAGAL_LOGIN", "DATA_KOSONG"),
-                        on_log=lambda m: send_log(74, f"[Shopee] {m}"),
+                        keywords=("[SHOPEE]",),
+                        on_log=lambda m: send_log(74, m) if "[SHOPEE]" in m or "batas waktu" in m.lower() else None,
                         timeout_sec=180,
                         cancel_event=cancel_event
                     )
@@ -1501,12 +1479,12 @@ def process_and_combine(owner_filter=None, upload=False, lock_timeout=0):
                 combined_df = pd.concat(dfs, ignore_index=True)
             else:
                 print("\n❌ Tidak ada data outlet yang ditemukan.")
-                return
+                return False
 
             # Filter baris yang memiliki Nama Pemilik
             if "Nama Pemilik" not in combined_df.columns:
                 print("❌ Kolom 'Nama Pemilik' tidak ditemukan dalam data.")
-                return
+                return False
 
             combined_df = combined_df[combined_df["Nama Pemilik"].notna()]
             combined_df = combined_df[combined_df["Nama Pemilik"].astype(str).str.strip() != ""]
@@ -1525,7 +1503,7 @@ def process_and_combine(owner_filter=None, upload=False, lock_timeout=0):
                         print(f"  - {o}")
                     if len(all_owners) > 20:
                         print(f"  ... dan {len(all_owners) - 20} lainnya.")
-                    return
+                    return False
                 all_owners = filtered
                 print(f"[*] Memproses {len(all_owners)} owner yang cocok dengan filter '{owner_filter}'.")
 
@@ -1573,12 +1551,13 @@ def process_and_combine(owner_filter=None, upload=False, lock_timeout=0):
             else:
                 print("   • Mode Lokal: File belum diunggah ke Google Drive (gunakan flag --upload untuk mengunggah).")
             print("=" * 65)
+            return not upload or upload_count == success_count
     except Timeout:
         info = get_lock_info()
         print(f"\n⚠️ Tidak dapat menjalankan proses: Pipeline sedang dikunci oleh proses lain.")
         print(f"   Sedang memproses: {info.get('owner', 'Tidak diketahui')} (oleh {info.get('user', 'Unknown')}, PID: {info.get('pid', '-')})")
         print("   Harap tunggu hingga proses tersebut selesai.")
-        return
+        return False
 
 
 def list_owners():
@@ -1627,9 +1606,10 @@ def main():
         return
 
     do_upload = args.upload and not args.local_only
-    process_and_combine(owner_filter=args.owner, upload=do_upload, lock_timeout=args.lock_timeout)
+    ok = process_and_combine(owner_filter=args.owner, upload=do_upload, lock_timeout=args.lock_timeout)
+    return 0 if ok is not False else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
 

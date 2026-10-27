@@ -8,14 +8,13 @@ Google Spreadsheet tab 'SOT' (Spreadsheet ID: 15_Xx5ixOcxy0L90U_BrFHfVnAgjIZpiiG
 Fitur:
 - Membaca data sumber dari master scraping multi-aplikator (GoFood, GrabFood, ShopeeFood)
   dan/atau data master akun dari tab 'DBR' (via URL CSV Publish to Web atau Apps Script).
-- Menerapkan format 37 kolom template standar.
-- Menambahkan kolom ke-38 'Terakhir Diperbaharui' secara otomatis melalui Apps Script.
-- Logika upsert: menimpa baris outlet yang sama (berdasarkan Aplikator + Store ID)
-  dan meng-append outlet baru.
+- Menerapkan format 44 kolom data template standar.
+- Menambahkan kolom ke-45 'Terakhir Diperbaharui' secara otomatis melalui Apps Script.
+- Logika full refresh: mengganti seluruh baris SOT dengan snapshot terbaru dari DBR.
 - Dapat dijalankan secara mandiri (CLI) atau diimpor oleh modul lain.
 
 Penggunaan CLI:
-    python cronjobsot/export_to_sot.py                  # Ekspor data master gabungan ke SOT
+    python cronjobsot/export_to_sot.py                  # Ekspor data DBR ke SOT
     python cronjobsot/export_to_sot.py --from-dbr        # Ekspor data master dari Tab DBR ke SOT
     python cronjobsot/export_to_sot.py --file file.xlsx  # Ekspor file Excel tertentu ke SOT
     python cronjobsot/export_to_sot.py --owner "Nama"    # Filter hanya owner tertentu
@@ -53,6 +52,7 @@ from sheet_syncer import (
 )
 
 GOOGLE_SHEET_DBR_URL = os.getenv("GOOGLE_SHEET_DBR_URL", "")
+DBR_CACHE_MAX_AGE_SECONDS = int(os.getenv("DBR_CACHE_MAX_AGE_SECONDS", "86400"))
 SOT_APP_SCRIPT_URL = os.getenv("SOT_APP_SCRIPT_URL", os.getenv("APP_SCRIPT_URL", ""))
 GOOGLE_SHEET_VERCEL_URL = os.getenv(
     "GOOGLE_SHEET_VERCEL_URL",
@@ -71,10 +71,10 @@ def load_dbr_master_data(force_live: bool = False) -> pd.DataFrame:
     1. GOOGLE_SHEET_DBR_URL (Publish to web CSV tab DBR jika disetel)
     2. Google Apps Script Web App (action: 'get_dbr' via SOT_APP_SCRIPT_URL)
     3. Cache lokal cronjobsot/cache/dbr_sheet_cache.csv
-    4. Fallback Google Sheet Vercel CSV (GOOGLE_SHEET_VERCEL_URL) & vercel_sheet_cache.csv
+
+    Vercel tidak digunakan sebagai sumber DBR/SOT.
     """
     dbr_cache_file = CACHE_DIR / "dbr_sheet_cache.csv"
-    vercel_cache_file = BASE_DIR / "cache" / "vercel_sheet_cache.csv"
     csv_text = ""
     df = None
 
@@ -119,33 +119,12 @@ def load_dbr_master_data(force_live: bool = False) -> pd.DataFrame:
     # 3. Fallback ke cache lokal DBR
     if df is None and dbr_cache_file.exists():
         try:
-            df = pd.read_csv(dbr_cache_file)
-            print(f"   ℹ️ [DBR] Menggunakan cache lokal ({dbr_cache_file.name}).")
-        except Exception:
-            pass
-
-    # 4. Fallback ke Vercel jika DBR belum terhubung
-    if df is None:
-        try:
-            url = GOOGLE_SHEET_VERCEL_URL
-            sep = "&" if "?" in url else "?"
-            url_busted = f"{url}{sep}_cb={int(time.time())}"
-            req = urllib.request.Request(
-                url_busted,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                csv_text = resp.read().decode('utf-8', errors='replace')
-            if csv_text.strip():
-                df = pd.read_csv(io.StringIO(csv_text))
-                print(f"   ✓ [VERCEL] Menggunakan data Vercel Sheet fallback ({len(csv_text)} bytes).")
-        except Exception:
-            pass
-
-    if df is None and vercel_cache_file.exists():
-        try:
-            df = pd.read_csv(vercel_cache_file)
-            print(f"   ℹ️ [VERCEL] Menggunakan cache lokal fallback ({vercel_cache_file.name}).")
+            cache_age = max(0, time.time() - dbr_cache_file.stat().st_mtime)
+            if cache_age <= DBR_CACHE_MAX_AGE_SECONDS:
+                df = pd.read_csv(dbr_cache_file)
+                print(f"   ℹ️ [DBR] Menggunakan cache lokal ({dbr_cache_file.name}, umur {int(cache_age)} detik).")
+            else:
+                print(f"   ❌ [DBR] Cache lokal ditolak karena terlalu lama ({int(cache_age)} detik; batas {DBR_CACHE_MAX_AGE_SECONDS} detik).")
         except Exception:
             pass
 
@@ -326,11 +305,8 @@ def main():
         print("[*] Memuat data dari Tab 'DBR'...")
         df = load_dbr_master_data()
     else:
-        print("[*] Memuat data gabungan master lokal (GoFood, GrabFood, ShopeeFood)...")
-        df = load_all_local_masters()
-        if df.empty:
-            print("[*] Master lokal kosong, mencoba memuat dari Tab 'DBR'...")
-            df = load_dbr_master_data()
+        print("[*] Memuat data langsung dari Tab 'DBR' untuk sinkronisasi SOT...")
+        df = load_dbr_master_data()
 
     if df.empty:
         print("❌ Tidak ada data yang dapat diekspor.")

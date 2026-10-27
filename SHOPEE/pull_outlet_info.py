@@ -46,6 +46,7 @@ from selenium.webdriver.support import expected_conditions as EC
 # Path Setup
 # ──────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
+BASE_DIR = SCRIPT_DIR.parent
 AUTOMATION_DIR = SCRIPT_DIR / "src" / "shopee-omzet-automation"
 CHROME_PROFILE_DIR = SCRIPT_DIR / "data" / "chrome_profile"
 
@@ -85,12 +86,14 @@ Options.add_argument = custom_add_argument
 SELLER_BASE = "https://foody.shopee.co.id"
 TEMPLATE_FILE = SCRIPT_DIR / "YYYY-MM-DD HH_MM Nama Pemilik.xlsx"
 SESSION_FILE = SCRIPT_DIR / "data" / "session_allvbadmin.json"
-CREDS_FILE = SCRIPT_DIR / "credentials.json"
+_credentials_path = os.getenv("SHOPEE_CREDENTIALS_FILE", "").strip()
+CREDS_FILE = Path(_credentials_path) if _credentials_path else None
 OUTPUT_DIR = SCRIPT_DIR / "data"
 
-# Default credentials fallback
+# Account label is fixed by the weekly Shopee flow. The password must come from
+# runtime configuration or an existing session, never from source code.
 DEFAULT_USERNAME = "allvbadmin"
-DEFAULT_PASSWORD = "Master!00!"
+DEFAULT_PASSWORD = os.getenv("SHOPEE_MASTER_PASSWORD", "")
 
 # Merchant keywords to EXCLUDE (jangan switch dan lewati merchant ini)
 EXCLUDE_KEYWORDS = [
@@ -952,7 +955,7 @@ def get_auth_session(target_name: str, target_merchant_id: str | int = None, tar
         browser.set_session_file(SESSION_FILE)
         username = DEFAULT_USERNAME
         password = DEFAULT_PASSWORD
-        if CREDS_FILE.exists():
+        if CREDS_FILE and CREDS_FILE.exists():
             try:
                 creds = json.loads(CREDS_FILE.read_text())
                 username = creds.get("username") or creds.get("shopee_username") or username
@@ -1385,6 +1388,7 @@ def run_pull(
         print(f"{'='*70}")
 
         # Authenticate & switch to this merchant
+        print(f"[SHOPEE][AUTH][START] Portal='{merchant_name}' (ID: {merchant_id or '-'}) | Akun utama: allvbadmin | Memeriksa sesi/login dan memilih portal.")
         print(f"\n[2/5] Authenticating & switching to '{merchant_name}' (ID: {merchant_id})...")
         try:
             tob_token, entity_id, extra_cookies = get_auth_session(
@@ -1397,18 +1401,21 @@ def run_pull(
                 custom_password=m.get("custom_password") or custom_password,
             )
         except Exception as e:
-            print(f"  [!] Gagal auth untuk merchant '{merchant_name}': {e}")
+            safe_error = type(e).__name__ or "AuthenticationError"
+            print(f"[SHOPEE][AUTH][FAIL] Portal='{merchant_name}' | Akun utama: allvbadmin | Tahap: autentikasi/pilih portal | Error: {safe_error}.")
             alert_item = {
                 "platform": "ShopeeFood",
                 "portal": merchant_name,
                 "merchant_id": str(merchant_id or ""),
                 "username": m.get("custom_username") or custom_username or DEFAULT_USERNAME,
                 "tipe": "GAGAL_LOGIN",
-                "pesan": f"Gagal auth/switch ke merchant '{merchant_name}' (ID: {merchant_id}): {e}"
+                "pesan": f"Gagal autentikasi/pilih portal ({safe_error})"
             }
             detector_alerts.append(alert_item)
             print(f"🚨 [PERINGATAN DETEKTOR] [ShopeeFood] GAGAL LOGIN pada portal '{merchant_name}' (ID: {merchant_id})!")
             continue
+
+        print(f"[SHOPEE][AUTH][OK] Portal='{merchant_name}' (ID: {merchant_id or '-'}) | Sesi akun utama aktif dan portal berhasil diverifikasi.")
 
         # Fetch all stores for this merchant
         print(f"\n[3/5] Fetching all stores for '{merchant_name}' (paginated)...")
@@ -1417,10 +1424,12 @@ def run_pull(
             entity_id=entity_id,
             extra_cookies=extra_cookies,
         )
-        all_stores = client.get_all_stores()
+        all_stores = client.get_all_stores() or []
+        print(f"[SHOPEE][STORES] Portal='{merchant_name}' | Store ditemukan: {len(all_stores)}.")
 
         if not all_stores:
             print(f"  [!] Tidak ada store ditemukan untuk '{merchant_name}'.")
+            print(f"[SHOPEE][RESULT][FAIL] Portal='{merchant_name}' | Tahap: ambil daftar store | Hasil: 0 store.")
             alert_item = {
                 "platform": "ShopeeFood",
                 "portal": merchant_name,
@@ -1436,14 +1445,18 @@ def run_pull(
         # Filter stores
         print(f"\n[4/5] Collecting stores for '{merchant_name}'...")
         filtered_stores = []
+        duplicate_count = 0
+        excluded_count = 0
         for store in all_stores:
             store_id = str(store.get("id", ""))
             store_name = store.get("name", "")
 
             if store_id in seen_store_ids:
+                duplicate_count += 1
                 continue  # Skip duplicates
 
             if not include_excluded and (is_excluded(store_name) or is_excluded(fallback_label)):
+                excluded_count += 1
                 print(f"  [EXCLUDE] Skipping store: {store_name}")
                 continue
 
@@ -1455,6 +1468,7 @@ def run_pull(
             seen_store_ids.add(store_id)
 
         print(f"  ✓ {len(filtered_stores)} stores from '{merchant_name}' processed")
+        print(f"[SHOPEE][FILTER] Portal='{merchant_name}' | Diproses detail: {len(filtered_stores)} | Duplikat: {duplicate_count} | Dikecualikan: {excluded_count}.")
 
         for fs in filtered_stores:
             m_lbl = fs["merchant"]
@@ -1465,7 +1479,13 @@ def run_pull(
             print(f"\n  Fetching detail for {len(filtered_stores)} stores...")
             results, failed = fetch_store_details(client, filtered_stores)
             all_results.extend(results)
-            print(f"  ✓ Detail fetched: {len(results)} OK, {failed} failed")
+            successful_details = max(0, len(results) - failed)
+            print(f"  ✓ Detail fetched: {successful_details} OK, {failed} failed")
+            result_status = "SUKSES" if failed == 0 else "SEBAGIAN"
+            print(f"[SHOPEE][DETAIL][{result_status}] Portal='{merchant_name}' | Detail berhasil: {successful_details} | Gagal: {failed}.")
+            print(f"[SHOPEE][RESULT][{result_status}] Portal='{merchant_name}' | Store diproses: {len(filtered_stores)}.")
+        else:
+            print(f"[SHOPEE][RESULT][SKIP] Portal='{merchant_name}' | Tidak ada store tersisa setelah filter.")
 
     # Simpan hasil deteksi peringatan ke file cache JSON
     try:
@@ -1606,8 +1626,27 @@ def run_pull(
             "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
             "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
             "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
-            "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif"
+            "BD", "Status Internal", "Tanggal Akuisisi", "Tanggal Live", "Tanggal Churn", "Tarif",
+            "Status Bot", "Vercel Kata Sandi", "Paket", "Tanggal Mulai Layanan",
+            "Tanggal Berakhir Layanan", "Akses Username", "Akses Kata Sandi",
+            "Komisi ShopeeFood", "Biaya Kemasan", "Nominal Biaya Kemasan", "Invite Staff"
         ]
+
+    # Selaraskan output Shopee dengan schema Listing terbaru, bukan template lama.
+    default_headers = [
+        "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
+        "Aplikator", "Group ID", "Nama Listing", "Link", "Store ID", "Status Listing", "Alamat",
+        "Nama Bank", "Nama Pemilik Rekening", "Nomor Rekening", "Nama Akses",
+        "Email FoodMaster1", "Email FoodMaster2", "Nama Pengguna", "Kata Sandi", "Nama Portal",
+        "S Nomor HP Akses Pemilik", "S Username Akses Pemilik", "S Kata Sandi Akses Pemilik",
+        "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
+        "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
+        "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff", "BD", "Status Internal",
+        "Tanggal Akuisisi", "Tanggal Live", "Tanggal Churn", "Tarif", "Status Bot",
+        "Vercel Kata Sandi", "Paket", "Tanggal Mulai Layanan", "Tanggal Berakhir Layanan",
+        "Akses Username", "Akses Kata Sandi", "Komisi ShopeeFood", "Biaya Kemasan",
+        "Nominal Biaya Kemasan", "Invite Staff"
+    ]
 
     wb = openpyxl.Workbook()
     font_header = Font(name="Calibri", size=11, bold=True)

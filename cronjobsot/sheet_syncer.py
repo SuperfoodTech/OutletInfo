@@ -10,6 +10,7 @@ import os
 import re
 import json
 import time
+import uuid
 import requests
 import pandas as pd
 from pathlib import Path
@@ -24,7 +25,7 @@ TARGET_SPREADSHEET_ID = "15_Xx5ixOcxy0L90U_BrFHfVnAgjIZpiiGBEK4Ce4SyI"
 TARGET_SHEET_NAME = "SOT"
 TARGET_SHEET_GID = "2135653103"
 
-# 43 Kolom Template Standar DBR (Kolom ke-44 'Terakhir Diperbaharui' ditambahkan oleh Apps Script di tab SOT)
+# 44 Kolom data standar DBR (kolom ke-45 'Terakhir Diperbaharui' ditambahkan Apps Script di tab SOT)
 STANDARD_HEADERS = [
     "Nama Pemilik", "Nama Brand", "Model", "Tipe", "Outlet", "Nomor HP",
     "Aplikator", "Group ID", "Nama Listing", "Link", "Store ID",
@@ -34,7 +35,7 @@ STANDARD_HEADERS = [
     "S Allvbadmin Username Akses Staff", "S Allvbadmin Kata Sandi Akses Staff",
     "S Bot Username Akses Staff", "S Bot Kata Sandi Akses Staff",
     "S BD Username Akses Staff", "S BD Kata Sandi Akses Staff",
-    "BD", "Status Internal", "Tanggal Live", "Tanggal Churn", "Tarif",
+    "BD", "Status Internal", "Tanggal Akuisisi", "Tanggal Live", "Tanggal Churn", "Tarif",
     "Status Bot", "Vercel Kata Sandi", "Paket", "Tanggal Mulai Layanan",
     "Tanggal Berakhir Layanan", "Akses Username", "Akses Kata Sandi"
 ]
@@ -179,8 +180,8 @@ def sync_outlets_to_google_sheet(
     cooldown: float = 2.0
 ) -> tuple[bool, dict]:
     """
-    Mengirimkan baris outlet ke Apps Script untuk di-upsert ke Google Spreadsheet tab 'SOT'.
-    Data yang sama akan ditimpa dan kolom 'Terakhir Diperbaharui' akan diperbarui.
+    Mengirimkan snapshot outlet terbaru ke Apps Script untuk mengganti seluruh data tab 'SOT'.
+    Kolom 'Terakhir Diperbaharui' diperbarui pada setiap baris.
     Dilengkapi batching (chunking), retry dengan backoff eksponensial, dan timeout 180 detik.
     """
     url = app_script_url or APP_SCRIPT_URL
@@ -210,6 +211,7 @@ def sync_outlets_to_google_sheet(
     total_updated = 0
     total_inserted = 0
     final_res = {}
+    refresh_id = uuid.uuid4().hex
 
     for chunk_idx, i in enumerate(range(0, total_rows, chunk_size), 1):
         chunk = rows[i : i + chunk_size]
@@ -219,7 +221,11 @@ def sync_outlets_to_google_sheet(
             "sheetName": TARGET_SHEET_NAME,
             "gid": TARGET_SHEET_GID,
             "headers": active_headers,
-            "rows": chunk
+            "rows": chunk,
+            "full_refresh": True,
+            "replace": chunk_idx == 1,
+            "refresh_id": refresh_id,
+            "chunk_index": chunk_idx
         }
 
         chunk_success = False
@@ -233,7 +239,7 @@ def sync_outlets_to_google_sheet(
                 res_json = resp.json()
 
                 if res_json.get("status") == "success":
-                    up = res_json.get("updated", 0)
+                    up = res_json.get("replaced", res_json.get("updated", 0))
                     ins = res_json.get("inserted", 0)
                     total_updated += up
                     total_inserted += ins

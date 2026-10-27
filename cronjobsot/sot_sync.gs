@@ -3,7 +3,7 @@
  * =========================================
  * Lokasi: /cronjobsot/sot_sync.gs
  * Target Spreadsheet: 15_Xx5ixOcxy0L90U_BrFHfVnAgjIZpiiGBEK4Ce4SyI
- * - Tab 'SOT' (GID: 2135653103): Menerima upsert 37 kolom standar + kolom ke-38 'Terakhir Diperbaharui'
+ * - Tab 'SOT' (GID: 2135653103): Menerima full refresh 44 kolom data + kolom ke-45 'Terakhir Diperbaharui'
  * - Tab 'DBR' (GID: 0): Menyediakan data master akun owner & kredensial
  *
  * Catatan Deployment:
@@ -79,6 +79,18 @@ function doGet(e) {
  * atau diisi jika outlet baru ditambahkan.
  */
 function handleSyncOutlets(data) {
+  var fullRefresh = data.full_refresh === true;
+  var refreshId = String(data.refresh_id || "");
+  var chunkIndex = String(data.chunk_index || "1");
+  var requestKey = refreshId ? "sot_refresh_" + refreshId + "_" + chunkIndex : "";
+  var requestCache = requestKey ? CacheService.getScriptCache() : null;
+  if (requestCache) {
+    var cachedResponse = requestCache.get(requestKey);
+    if (cachedResponse) {
+      return JSON.parse(cachedResponse);
+    }
+  }
+
   var spreadsheetId = data.spreadsheetId || "15_Xx5ixOcxy0L90U_BrFHfVnAgjIZpiiGBEK4Ce4SyI";
   var sheetName = data.sheetName || "SOT";
   var ss = SpreadsheetApp.openById(spreadsheetId);
@@ -119,7 +131,7 @@ function handleSyncOutlets(data) {
     lastRow = 1;
     lastCol = headers.length;
   }
-  
+
   // Pastikan kolom terakhir adalah 'Terakhir Diperbaharui'
   var timestampColIdx = -1;
   for (var h = 0; h < headers.length; h++) {
@@ -133,6 +145,46 @@ function handleSyncOutlets(data) {
     headers.push("Terakhir Diperbaharui");
     sheet.getRange(1, headers.length).setValue("Terakhir Diperbaharui").setFontWeight("bold");
     lastCol = headers.length;
+  }
+
+  // Selaraskan schema lama ke schema payload tanpa kehilangan data berdasarkan nama header.
+  // Ini juga menempatkan kolom baru di posisi yang diminta, bukan sekadar menambah di ujung.
+  var desiredHeaders = incomingHeaders.filter(function(h) {
+    return String(h || "").trim() && String(h || "").trim() !== "Terakhir Diperbaharui";
+  });
+  desiredHeaders.push("Terakhir Diperbaharui");
+  var schemaChanged = desiredHeaders.length > 1 && headers.length !== desiredHeaders.length;
+  if (!schemaChanged) {
+    for (var sh = 0; sh < desiredHeaders.length; sh++) {
+      if (String(headers[sh] || "").trim() !== desiredHeaders[sh]) {
+        schemaChanged = true;
+        break;
+      }
+    }
+  }
+  if (schemaChanged) {
+    var oldRows = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, headers.length).getValues() : [];
+    var oldHeaders = headers.slice();
+    var migratedRows = oldRows.map(function(oldRow) {
+      return desiredHeaders.map(function(header) {
+        var oldIdx = oldHeaders.indexOf(header);
+        return oldIdx === -1 ? "" : oldRow[oldIdx];
+      });
+    });
+    if (sheet.getMaxColumns() < desiredHeaders.length) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), desiredHeaders.length - sheet.getMaxColumns());
+    }
+    if (lastCol > desiredHeaders.length) {
+      sheet.getRange(1, desiredHeaders.length + 1, Math.max(lastRow, 1), lastCol - desiredHeaders.length).clearContent();
+    }
+    sheet.getRange(1, 1, 1, desiredHeaders.length).setValues([desiredHeaders]);
+    sheet.getRange(1, 1, 1, desiredHeaders.length).setFontWeight("bold");
+    if (migratedRows.length > 0) {
+      sheet.getRange(2, 1, migratedRows.length, desiredHeaders.length).setValues(migratedRows);
+    }
+    headers = desiredHeaders;
+    lastCol = desiredHeaders.length;
+    timestampColIdx = desiredHeaders.length - 1;
   }
   
   // Indeks kolom penting untuk composite key
@@ -155,6 +207,11 @@ function handleSyncOutlets(data) {
   var existingRows = [];
   if (lastRow > 1) {
     existingRows = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  }
+  var staleRowsToClear = 0;
+  if (fullRefresh && data.replace === true) {
+    staleRowsToClear = existingRows.length;
+    existingRows = [];
   }
   
   function getCompositeKey(rowArray) {
@@ -207,16 +264,22 @@ function handleSyncOutlets(data) {
     // Perbarui nilai kolom Terakhir Diperbaharui
     rowValues[timestampColIdx] = nowStr;
     
-    // Cek apakah data sudah ada (overwrite) atau baru (insert)
-    var inKey = getCompositeKey(rowValues);
-    if (inKey in keyToRowIdx) {
-      var targetIdx = keyToRowIdx[inKey];
-      existingRows[targetIdx] = rowValues;
-      updatedCount++;
-    } else {
+    if (fullRefresh) {
+      // Snapshot baru ditulis apa adanya, termasuk baris tanpa Store ID.
       existingRows.push(rowValues);
-      keyToRowIdx[inKey] = existingRows.length - 1;
       insertedCount++;
+    } else {
+      // Mode lama tetap tersedia untuk payload tanpa flag full_refresh.
+      var inKey = getCompositeKey(rowValues);
+      if (inKey in keyToRowIdx) {
+        var targetIdx = keyToRowIdx[inKey];
+        existingRows[targetIdx] = rowValues;
+        updatedCount++;
+      } else {
+        existingRows.push(rowValues);
+        keyToRowIdx[inKey] = existingRows.length - 1;
+        insertedCount++;
+      }
     }
   }
   
@@ -224,17 +287,30 @@ function handleSyncOutlets(data) {
   if (existingRows.length > 0) {
     sheet.getRange(2, 1, existingRows.length, headers.length).setValues(existingRows);
   }
+  if (staleRowsToClear > existingRows.length) {
+    sheet.getRange(existingRows.length + 2, 1, staleRowsToClear - existingRows.length, headers.length).clearContent();
+  }
+  if (fullRefresh) {
+    updatedCount = incomingRows.length;
+    insertedCount = 0;
+  }
   
-  return {
+  var result = {
     status: "success",
     spreadsheetId: spreadsheetId,
     sheetName: sheet.getName(),
     gid: sheet.getSheetId(),
     updated: updatedCount,
+    replaced: fullRefresh ? incomingRows.length : updatedCount,
     inserted: insertedCount,
+    mode: fullRefresh ? "full_refresh" : "upsert",
     totalRows: existingRows.length,
     timestamp: nowStr
   };
+  if (requestCache) {
+    requestCache.put(requestKey, JSON.stringify(result), 21600);
+  }
+  return result;
 }
 
 /**
