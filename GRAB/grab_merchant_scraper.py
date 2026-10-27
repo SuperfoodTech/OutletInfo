@@ -87,12 +87,21 @@ def get_safe_cache_filename(portal_name):
 
 
 def get_credentials_from_sheet(source_type="agency", custom_url=None):
-    """Mengambil daftar kredensial portal Grab berdasarkan tipe sumber (Agency, VB, atau Vercel)."""
+    """Mengambil daftar kredensial portal Grab berdasarkan sumber yang dipilih."""
     data = []
     
     st_lower = str(source_type).lower()
     target_url = custom_url
-    if not target_url:
+    if st_lower == "dbr":
+        snapshot_path = os.getenv("WEEKLY_DBR_SNAPSHOT", "").strip()
+        if snapshot_path and os.path.isfile(snapshot_path):
+            try:
+                with open(snapshot_path, "r", encoding="utf-8", newline="") as f:
+                    data = list(csv.reader(f))
+            except Exception as e:
+                logger.error(f"Gagal membaca snapshot DBR ({type(e).__name__}).")
+        target_url = None
+    elif not target_url:
         if st_lower == "vb":
             target_url = GOOGLE_SHEET_VB_URL or os.getenv("GRAB_VB_CSV_URL", "")
         elif st_lower == "vercel":
@@ -170,7 +179,7 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
     else:
         # 1. Exact match pass
         for i, h in enumerate(header):
-            if h in ['aplikasi', 'app', 'platform']:
+            if h in ['aplikasi', 'aplikator', 'app', 'platform']:
                 col_app = i
             elif h in ['owner', 'pemilik', 'nama pemilik']:
                 col_owner = i
@@ -178,20 +187,20 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
                 col_portal = i
             elif h in ['nama outlet', 'outlet', 'nama brand', 'brand']:
                 col_outlet = i
-            elif h in ['username', 'nama pengguna', 'user login', 'user']:
+            elif h in ['username', 'nama pengguna', 'akses username', 'user login', 'user']:
                 col_user = i
-            elif h in ['password', 'kata sandi', 'pass login', 'pass']:
+            elif h in ['password', 'kata sandi', 'akses kata sandi', 'pass login', 'pass']:
                 col_pass = i
             elif h in ['notes', 'catatan', 'keterangan']:
                 col_notes = i
 
         # 2. Substring fallback only for still unmapped columns
         for i, h in enumerate(header):
-            if col_app == -1 and any(k in h for k in ['aplikasi', 'platform']): col_app = i
+            if col_app == -1 and any(k in h for k in ['aplikasi', 'aplikator', 'platform']): col_app = i
             if col_owner == -1 and any(k in h for k in ['owner', 'pemilik']): col_owner = i
             if col_portal == -1 and any(k in h for k in ['portal']): col_portal = i
             if col_outlet == -1 and any(k in h for k in ['outlet']): col_outlet = i
-            if col_user == -1 and any(k in h for k in ['user']): col_user = i
+            if col_user == -1 and any(k in h for k in ['user', 'pengguna']): col_user = i
             if col_pass == -1 and any(k in h for k in ['pass']): col_pass = i
 
         if col_portal == -1:
@@ -227,8 +236,11 @@ def get_credentials_from_sheet(source_type="agency", custom_url=None):
             
             if username and username != "-":
                 if not password or password == "-" or password.lower() in ("nan", "none"):
+                    if st_lower == "dbr":
+                        logger.warning(f"⚠️ Kredensial DBR untuk portal '{portal}' tidak memiliki kata sandi; tidak memakai password default.")
+                        continue
                     password = DEFAULT_GRAB_PASSWORD
-                    logger.info(f"ℹ️ Password kosong di data sheet untuk '{username}', menggunakan default: {DEFAULT_GRAB_PASSWORD}")
+                    logger.info(f"ℹ️ Password kosong di data sheet untuk akun {username}; menggunakan password default yang dikonfigurasi.")
 
                 safe_cache_name = get_safe_cache_filename(portal)
                 safe_portal_name = "".join([c for c in portal if c.isalpha() or c.isdigit() or c == ' ']).rstrip()
@@ -1424,7 +1436,7 @@ async def main():
     import datetime
     
     parser = argparse.ArgumentParser(description="Grab Merchant Scraper")
-    parser.add_argument("--type", type=str, choices=["agency", "vb", "vercel"], help="Pilih tipe sumber: 'agency', 'vb', atau 'vercel'")
+    parser.add_argument("--type", type=str, choices=["agency", "vb", "vercel", "dbr"], help="Pilih tipe sumber: 'agency', 'vb', 'vercel', atau DBR")
     parser.add_argument("--agency", action="store_true", help="Gunakan sumber kredensial Agency")
     parser.add_argument("--vb", action="store_true", help="Gunakan sumber kredensial VB (Virtual Brand)")
     parser.add_argument("--vercel", action="store_true", help="Gunakan sumber kredensial Vercel Sheet")
@@ -1446,7 +1458,9 @@ async def main():
     source_type = "agency"
     custom_url = args.url or args.vb_url
 
-    if args.vercel or args.type == "vercel":
+    if args.type == "dbr":
+        source_type = "dbr"
+    elif args.vercel or args.type == "vercel":
         source_type = "vercel"
     elif args.vb or args.type == "vb":
         source_type = "vb"

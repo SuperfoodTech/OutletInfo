@@ -97,27 +97,31 @@ def load_dbr_master_data(force_live: bool = False) -> pd.DataFrame:
             with urllib.request.urlopen(req, timeout=12) as resp:
                 csv_text = resp.read().decode('utf-8', errors='replace')
             if csv_text.strip():
-                dbr_cache_file.write_text(csv_text, encoding="utf-8")
+                if not force_live:
+                    dbr_cache_file.write_text(csv_text, encoding="utf-8")
                 print(f"   ✓ [DBR] Berhasil memuat data live tab DBR dari Google Sheet ({len(csv_text)} bytes).")
                 df = pd.read_csv(io.StringIO(csv_text))
         except Exception as e:
-            print(f"   ⚠️ Fetch live GOOGLE_SHEET_DBR_URL ({e}). Mencoba jalur Apps Script/Cache.")
+            detail = type(e).__name__ if force_live else str(e)
+            print(f"   ⚠️ Fetch live GOOGLE_SHEET_DBR_URL ({detail}). Mencoba jalur Apps Script/Cache.")
 
     # 2. Coba fetch via Google Apps Script Web App jika df masih kosong
-    if df is None and SOT_APP_SCRIPT_URL:
+    if (df is None or df.empty) and SOT_APP_SCRIPT_URL:
         try:
             resp = requests.post(SOT_APP_SCRIPT_URL, json={"action": "get_dbr"}, timeout=15)
             if resp.status_code == 200:
                 res_json = resp.json()
                 if res_json.get("status") == "success" and res_json.get("data"):
                     df = pd.DataFrame(res_json["data"])
-                    df.to_csv(dbr_cache_file, index=False)
+                    if not force_live:
+                        df.to_csv(dbr_cache_file, index=False)
                     print(f"   ✓ [DBR] Berhasil memuat {len(df)} baris tab DBR via Apps Script Web App.")
         except Exception as e:
-            print(f"   ℹ️ Fetch tab DBR via Apps Script ({e}).")
+            detail = type(e).__name__ if force_live else str(e)
+            print(f"   ℹ️ Fetch tab DBR via Apps Script ({detail}).")
 
     # 3. Fallback ke cache lokal DBR
-    if df is None and dbr_cache_file.exists():
+    if (df is None or df.empty) and not force_live and dbr_cache_file.exists():
         try:
             cache_age = max(0, time.time() - dbr_cache_file.stat().st_mtime)
             if cache_age <= DBR_CACHE_MAX_AGE_SECONDS:
@@ -129,6 +133,8 @@ def load_dbr_master_data(force_live: bool = False) -> pd.DataFrame:
             pass
 
     if df is None or df.empty:
+        if force_live:
+            print("   ❌ [DBR] Tidak ada snapshot live yang berhasil dimuat; cache lama tidak digunakan.")
         return pd.DataFrame()
 
     df.columns = [str(c).strip() for c in df.columns]
@@ -152,6 +158,8 @@ def load_dbr_master_data(force_live: bool = False) -> pd.DataFrame:
 
     if "Aplikasi" in df.columns and "Aplikator" not in df.columns:
         df["Aplikator"] = df["Aplikasi"].apply(clean_app)
+    elif "Aplikator" in df.columns:
+        df["Aplikator"] = df["Aplikator"].apply(clean_app)
 
     if "Status Listing" not in df.columns:
         df["Status Listing"] = "LIVE"

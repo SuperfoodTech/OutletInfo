@@ -127,6 +127,27 @@ def get_owner_brand_mapping():
     """Membangun pemetaan dari nama portal/merchant ke (Nama Pemilik, Nama Brand)."""
     mapping = {}
     base_proj = SCRIPT_DIR.parent
+
+    # Weekly SOT supplies the same private DBR snapshot used by all scrapers.
+    # In that mode DBR is authoritative; do not consult Vercel or agency sheets.
+    dbr_snapshot = os.getenv("WEEKLY_DBR_SNAPSHOT", "").strip()
+    if dbr_snapshot and Path(dbr_snapshot).is_file():
+        try:
+            dbr_df = pd.read_csv(dbr_snapshot)
+            for _, row in dbr_df.iterrows():
+                owner = str(row.get("Nama Pemilik") or "").strip()
+                brand = str(row.get("Nama Brand") or row.get("Nama Outlet") or "").strip()
+                portal = str(row.get("Nama Portal") or "").strip()
+                if owner:
+                    for key in (portal, brand):
+                        if key and key.casefold() not in ("nan", "none", "-"):
+                            mapping[key.casefold()] = (owner, brand or key)
+                            mapping[key.casefold().rstrip("_").strip()] = (owner, brand or key)
+            return mapping
+        except Exception as exc:
+            print(f"[SHOPEE][DBR] Gagal membaca mapping DBR ({type(exc).__name__}).")
+            return mapping
+
     master_files = [
         base_proj / "GOFOOD" / "master" / "0master.xlsx",
         base_proj / "GRAB" / "master" / "0master.xlsx"
