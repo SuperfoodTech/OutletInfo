@@ -87,7 +87,7 @@ SELLER_BASE = "https://foody.shopee.co.id"
 TEMPLATE_FILE = SCRIPT_DIR / "YYYY-MM-DD HH_MM Nama Pemilik.xlsx"
 SESSION_FILE = SCRIPT_DIR / "data" / "session_allvbadmin.json"
 _credentials_path = os.getenv("SHOPEE_CREDENTIALS_FILE", "").strip()
-CREDS_FILE = Path(_credentials_path) if _credentials_path else None
+CREDS_FILE = Path(_credentials_path) if _credentials_path else SCRIPT_DIR / "credentials.json"
 OUTPUT_DIR = SCRIPT_DIR / "data"
 
 # Account label is fixed by the weekly Shopee flow. The password must come from
@@ -155,7 +155,6 @@ def get_owner_brand_mapping():
     for mf in master_files:
         if mf.exists():
             try:
-                import pandas as pd
                 df = pd.read_excel(mf, sheet_name="Listing")
                 for _, row in df.iterrows():
                     p = str(row.get("Nama Portal") or "").strip().lower()
@@ -172,7 +171,6 @@ def get_owner_brand_mapping():
     vercel_cache = base_proj / "cache" / "vercel_sheet_cache.csv"
     if vercel_cache.exists():
         try:
-            import pandas as pd
             vdf = pd.read_csv(vercel_cache)
             for _, row in vdf.iterrows():
                 o = str(row.get("Owner") or "").strip()
@@ -190,7 +188,6 @@ def get_owner_brand_mapping():
     # Fallback dari Google Sheet Agency jika master lokal kosong
     if not mapping:
         try:
-            import pandas as pd
             agency_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?output=csv"
             df = pd.read_csv(agency_url)
             for _, row in df.iterrows():
