@@ -15,10 +15,23 @@ import cronjobsot.weekly_batch_sync as weekly
 from cronjobsot import export_to_sot
 from GOFOOD import gofood_scraper
 from GRAB import grab_merchant_scraper
+from SHOPEE import pull_outlet_info as shopee_scraper
 from cronjobsot.sheet_syncer import STANDARD_HEADERS, SOT_FILLED_COLUMNS
 
 
 class WeeklyDbrScrapeTests(unittest.TestCase):
+    def test_shopee_owner_mapping_uses_weekly_dbr_snapshot(self):
+        dbr = pd.DataFrame([
+            {"Nama Pemilik": "DBR Owner", "Nama Brand": "DBR Brand", "Aplikator": "ShopeeFood", "Nama Portal": "DBR Portal"},
+        ])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = Path(temp_dir) / "dbr.csv"
+            dbr.to_csv(snapshot, index=False)
+            with mock.patch.dict(os.environ, {"WEEKLY_DBR_SNAPSHOT": str(snapshot)}):
+                mapping = shopee_scraper.get_owner_brand_mapping()
+
+        self.assertEqual(mapping["dbr portal"], ("DBR Owner", "DBR Brand"))
+
     def test_sot_owner_picker_uses_dbr_not_vercel_or_masters(self):
         dbr = pd.DataFrame([
             {"Nama Pemilik": "DBR Owner", "Aplikator": "GoFood"},
